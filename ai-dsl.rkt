@@ -505,6 +505,93 @@
   (ai-tool-loop (string-append (format "~a" (quote arg)) ...)))
 
 ;; ============================================================
+;; 调试：打印实际构建的消息历史
+;; ============================================================
+
+(define (history-show-raw)
+  "显示当前消息历史的原始结构（实际发送给API的格式）"
+  (printf "  当前消息历史 (共 ~a 条消息):\n" (length (current-messages)))
+  (for ([msg (in-list (current-messages))]
+        [i (in-naturals 1)])
+    (printf "  [~a] " i)
+    (pretty-print msg)
+    (printf "\n")))
+
+(define (history-show-compact)
+  "显示消息历史的紧凑格式（角色+内容摘要）"
+  (printf "  消息序列:\n")
+  (for ([msg (in-list (current-messages))]
+        [i (in-naturals 1)])
+    (define role (hash-ref msg 'role))
+    (define content (hash-ref msg 'content #f))
+    (define tc (hash-ref msg 'tool_calls #f))
+    (define tool-call-id (hash-ref msg 'tool_call_id #f))
+
+    (printf "  [~a] " i)
+    (display (format-styled 'tool-name (format "~a" role)))
+
+    (cond
+      [tc
+       (printf " (工具调用 x~a): " (length tc))
+       (for ([t (in-list tc)])
+         (printf "~a " (tool-call-func-name t)))]
+      [tool-call-id
+       (printf " (结果): ")
+       (define short (if (> (string-length content) 60)
+                         (string-append (substring content 0 60) "...")
+                         content))
+       (printf "~a" short)]
+      [content
+       (printf ": ")
+       (define short (if (> (string-length content) 80)
+                         (string-append (substring content 0 80) "...")
+                         content))
+       (printf "~a" short)])
+    (printf "\n")))
+
+(define (history-show-json)
+  "以格式化的JSON显示消息历史"
+  (define msgs (current-messages))
+  ;; 先构建完整的messages数组jsexpr
+  (define messages-jsexpr
+    (hasheq 'messages msgs))
+
+  (printf "  消息历史 (JSON格式):\n")
+  (pretty-print messages-jsexpr))
+
+;; ============================================================
+;; 带请求完整信息的调试输出
+;; ============================================================
+
+(define (history-show-debug)
+  "完整调试信息：消息序列 + API请求结构"
+  (printf "══════════════════════════════════════════\n")
+  (printf "  API 请求构建预览\n")
+  (printf "══════════════════════════════════════════\n")
+
+  ;; 显示每个消息的详细结构
+  (printf "\n  消息序列 (%d条):\n" (length (current-messages)))
+  (printf "  ───────────────────────────────────────\n")
+  (for ([msg (in-list (current-messages))]
+        [i (in-naturals 1)])
+    (printf "  [消息 %d]\n" i)
+    (pretty-print msg)
+    (printf "  ───────────────────────────────────────\n"))
+
+  ;; 显示完整的请求结构
+  (printf "\n  完整请求体:\n")
+  (printf "  ───────────────────────────────────────\n")
+  (define req
+    (build-chat-request
+     #:model (current-model)
+     #:messages (current-messages)
+     #:stream #t
+     #:max_tokens 8192
+     #:tools (tools-schemas (current-tools))))
+  (pretty-print req)
+  (printf "══════════════════════════════════════════\n"))
+
+;; ============================================================
 ;; 命令处理函数（可在外部调用）
 ;; ============================================================
 
@@ -517,6 +604,10 @@
     ;; 历史命令
     [(string=? line ":tree") (history-tree) #t]
     [(string=? line ":path") (history-path) #t]
+    [(string=? line ":history") (history-show-raw) #t]      ; 改为原始格式
+    [(string=? line ":h") (history-show-compact) #t]         ; 紧凑格式
+    [(string=? line ":hjson") (history-show-json) #t]        ; JSON格式
+    [(string=? line ":hdebug") (history-show-debug) #t]      ; 完整调试
     [(string-prefix? line ":jump ")
      (define idx (string->number (substring line 6)))
      (if idx (history-jump idx) (display "  需要数字索引\n"))
