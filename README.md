@@ -141,7 +141,6 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 | 2 | `test.rkt` example 3 | Streaming + reasoning (thinking) mode |
 | 3 | `test.rkt` example 4 | Non-streaming + tool calls |
 | 4 | **`test.rkt` example 5** | **Streaming + automatic tool loop (core pattern)** |
-| 5 | `ARCHITECTURE.md` | Full architecture & extension guide |
 
 ---
 
@@ -149,6 +148,43 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 
 - **Racket** (recommended v8.6+, minimum 64-bit v7.x)
 - **API Key**: `DEEPSEEK_API_KEY` or `DASHSCOPE_API_KEY`
+
+---
+
+## Going Further: Orchestrate Multiple AIs, Custom Workflows
+
+All the building blocks above naturally lead to a powerful possibility: **orchestrating multiple AI models — each specialized for a particular stage — into a custom AI pipeline for a specific task.** For example, use Model A for intent recognition, Model B for code generation, and Model C for review and summarization. The output of each step can be passed losslessly to the next.
+
+This platform is **always modifiable** — switch models, tweak parameters, change workflows, all within a few lines of code. No framework changes, no architecture overhauls. For different scenarios (customer service, coding assistant, writing aid, etc.), you can quickly assemble a tailored AI pipeline like building with LEGO blocks. This is not a fixed product — it is **your AI workbench, your rules.**
+(lambda to ai)
+---
+
+## Project Structure
+
+```
+.
+├── README.md                   # This file
+├── test.rkt                    # Best starting point — 5 demo examples
+├── ai-dsl.rkt                  # Sample interactive REPL (optional)
+├── net-io.rkt                  # Pure network transport: HTTP + SSE
+├── api-config/                 # API URLs, model names, keys
+│   └── deepseek.rkt
+│   └── tongyi.rkt
+├── api-platform/               # Platform adapters (pluggable)
+│   ├── deepseek/
+│   │   ├── chat.rkt            # Chat API (sync + stream)
+│   │   ├── json-build-parse.rkt# Request/response builders & parsers
+│   │   └── ...
+│   └── tongyi/
+│       ├── chat.rkt
+│       ├── json-build-parse.rkt
+│       └── ...
+├── tools/                      # Tool system
+│   └── deepseek-base-tool.rkt  # Built-in tools: run_shell, read_file, write_file
+├── history/                    # Conversation history manager
+├── format-color/               # Terminal output styling
+└── tools/                      # Utility tools
+```
 
 ---
 
