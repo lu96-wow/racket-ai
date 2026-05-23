@@ -15,7 +15,7 @@
 (require json)
 
 (provide
- build-messages build-user-message
+ build-messages build-message build-user-message
  build-assistant-message build-tool-result
  build-tool
  build-thinking

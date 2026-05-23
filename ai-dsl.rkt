@@ -4,6 +4,7 @@
 ;;
 ;; 提供参数化环境，封装完整工具循环，支持 REPL 交互。
 ;; 支持对话历史的分支、跳转、删除。
+;; 支持 ai? (对话) / ai! (返回文本) / ai/eval (生成并执行代码)
 ;; ============================================================
 
 (require "api-platform/deepseek/chat.rkt"
@@ -39,7 +40,7 @@
  ;; 工具循环
  ai-tool-loop
  ;; 提问宏/函数
- ai? ai-any
+ ai? ai! ai/eval
  ;; REPL
  enter-env quit-env
  ;; 命令处理（可在外部调用）
@@ -338,18 +339,8 @@
              #:on-reasoning (lambda (r) (display (format-styled 'reasoning r)) (flush-output))
              #:on-tool-calls (lambda (tcs) (void))))
 
-(define-syntax ai-any
-  (lambda (stx)
-    (syntax-case stx ()
-      [(_ expr ...)
-       #'(begin
-           (let ([parts (list (lambda () (format "~a" expr)) ...)])
-             (define str (string-join (map (lambda (f) (f)) parts) " "))
-             (ai-tool-loop str))
-           (void))])))
-
 ;; ============================================================
-;; 工具循环
+;; 工具循环（支持返回值）
 ;; ============================================================
 
 (define (ai-tool-loop prompt
@@ -359,13 +350,15 @@
                       #:on-reasoning [on-reasoning (lambda (r)
                                                      (display (format-styled 'reasoning r))
                                                      (flush-output))]
-                      #:on-tool-call [on-tool-call (lambda (name args result) (void))])
+                      #:on-tool-call [on-tool-call (lambda (name args result) (void))]
+                      #:return [return? #f])
   (let* ([msgs (current-messages)]
          [tools (current-tools)]
          [model (current-model)]
          [cf (or tool-confirm (current-tool-confirm-fn))]
          [root (current-history-root)]
-         [node (current-history-node)])
+         [node (current-history-node)]
+         [final-result (box "")])
 
     (display (format-styled 'user-prefix " user "))
     (display (format-styled 'stream-hint prompt))
@@ -399,7 +392,8 @@
                         (build-messages
                          (build-user-message #:content prompt)
                          (build-assistant-message #:content "(达到最大工具调用轮数，用户终止)"))))
-               (h-set-ai! root current-child "(达到最大工具调用轮数，用户终止)")]
+               (h-set-ai! root current-child "(达到最大工具调用轮数，用户终止)")
+               (set-box! final-result "(达到最大工具调用轮数，用户终止)")]
               [(? number? new-max)
                (display (format-styled 'prompt
                                        (format "  已将工具调用上限设为 ~a 轮，继续...\n" new-max)))
@@ -457,7 +451,8 @@
                                   (build-user-message #:content prompt)
                                   (build-assistant-message #:content acc-cc #:reasoning_content acc-rc)))])
                     (current-messages clean-messages)
-                    (h-set-ai! root current-child acc-cc))
+                    (h-set-ai! root current-child acc-cc)
+                    (set-box! final-result acc-cc))
 
                   ;; 工具调用：仅在 work-messages 中保存
                   (let ()
@@ -518,7 +513,11 @@
                     (printf "\n")
                     (when all-confirmed?
                       (loop work-messages (add1 turn)))))))))
-    (void)))
+
+    ;; 根据 return? 决定返回值
+    (if return?
+        (unbox final-result)
+        (void))))
 
 ;; ============================================================
 ;; 最大轮数确认函数
@@ -557,11 +556,68 @@
      (display (format-styled 'max-turns "  无效输入\n"))
      (confirm-max-turns-dynamic current-turns)]))
 
-;; ai? 宏
+;; ============================================================
+;; 宏：ai? — 对话模式（仅打印，返回 void）
+;; ============================================================
+
 (define-syntax-rule (ai? arg ...)
   (begin
     (ai-tool-loop (string-append (format "~a" (quote arg)) ...))
     (void)))
+
+;; ============================================================
+;; 宏：ai! — 数据模式（返回 AI 最终回复文本）
+;; ============================================================
+
+(define-syntax ai!
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ expr ...)
+       #'(ai-tool-loop (string-append (format "~a" (quote expr)) ...) #:return #t)])))
+
+;; ============================================================
+;; ai-eval-helper — 无工具模式，返回 S 表达式
+;; ============================================================
+
+(define (ai-eval-helper . args)
+  "无工具模式，返回 read 后的 S 表达式"
+  (define prompt (string-join args " "))
+  (define saved-tools (current-tools))
+  (define saved-msgs (current-messages))
+
+  (current-messages
+   (append saved-msgs
+           (build-messages
+            (build-message #:role "system"
+                           #:content "你现在是代码生成器。只输出一个 Racket S 表达式，不要解释，不要 markdown，直接以 ( 开头。"))))
+  (current-tools (build-tools))
+
+  (define code (ai-tool-loop prompt #:return #t))
+
+  (current-tools saved-tools)
+  (current-messages saved-msgs)
+
+  (define cleaned
+    (let* ([trimmed (string-trim code)]
+           [no-open (regexp-replace #rx"^```[a-z]*\\s*" trimmed "")]
+           [no-close (regexp-replace #rx"\\s*```$" no-open "")]
+           [result (string-trim no-close)])
+      result))
+  (read (open-input-string cleaned)))
+
+;; ============================================================
+;; 宏：ai/eval — 接受字符串或自然语言，eval 在调用者命名空间
+;; ============================================================
+
+(define-syntax ai/eval
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ expr ...)
+       #'(eval (ai-eval-helper
+                (let ([v (quote expr)])
+                  (if (string? v) v (format "~a" v)))
+                ...)
+               (current-namespace))])))
 
 ;; ============================================================
 ;; 调试：打印实际构建的消息历史
@@ -677,11 +733,10 @@
   (display (format-styled 'history-path "    :allow 工具   关闭指定工具确认\n"))
   (display (format-styled 'history-path "    :confirm-clear 清除所有工具确认设置\n"))
   (printf "\n")
-  (display (format-styled 'tool-name "  使用示例:\n"))
-  (display (format-styled 'history-path "    直接输入问题开始对话，如: 你好，请介绍一下自己\n"))
-  (display (format-styled 'history-path "    多轮对话会自动保存历史，使用 :tree 查看分支\n"))
-  (display (format-styled 'history-path "    工具调用循环中按 Enter 可中断当前请求\n"))
-  (display (format-styled 'history-path "    达到最大工具调用轮数时会询问是否继续\n"))
+  (display (format-styled 'tool-name "  编程模式:\n"))
+  (display (format-styled 'history-path "    ai?  ...     对话模式，仅打印\n"))
+  (display (format-styled 'history-path "    ai!  ...     数据模式，返回 AI 最终文本\n"))
+  (display (format-styled 'history-path "    ai/eval ...  执行模式，AI 生成 S 表达式并执行\n"))
   (printf "\n")
   (display (format-styled 'tool-name "  提示:\n"))
   (display (format-styled 'history-path "    • 当前分支用 * 标记\n"))

@@ -10,7 +10,7 @@
 (require json)
 
 (provide
- build-messages build-user-message
+ build-messages build-message build-user-message
  build-assistant-message build-tool-result
  build-tool
  build-chat-request json->string string->json
@@ -78,7 +78,7 @@
                                (maybe (maybe (hasheq 'model model 'messages messages)
                                              'stream stream) 'max_tokens max_tokens)
                                'temperature temp) 'top_p top_p)
-                     'n n) 'tools tools)
+                       'n n) 'tools tools)
          'stop stop))
 
 ;; ============================================================
