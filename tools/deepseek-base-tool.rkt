@@ -21,6 +21,30 @@
  shell-tool read-file-tool write-file-tool default-tools)
 
 ;; ============================================================
+;; 路径安全检查（通用）
+;; ============================================================
+
+(define (resolve-path fp)
+  "将路径基于当前工作目录解析为规范化绝对路径"
+  (path->string (simplify-path (path->complete-path fp))))
+
+(define (is-subpath? parent child)
+  "判断 child 是否在 parent 目录下"
+  (define p (path->string (simplify-path parent)))
+  (define c (path->string (simplify-path child)))
+  (and (>= (string-length c) (string-length p))
+       (string=? (substring c 0 (string-length p)) p)))
+
+(define (check-path-escape fp)
+  "检查路径是否安全（在当前工作目录下）。安全返回 #f，不安全返回错误消息。"
+  (define cwd (current-directory))
+  (with-handlers ([exn:fail? (lambda (e) (format "路径解析失败: ~a" (exn-message e)))])
+    (define resolved (resolve-path fp))
+    (if (is-subpath? cwd resolved)
+        #f
+        (format "路径逃逸: ~a 不在当前工作目录 ~a 内" resolved (path->string cwd)))))
+
+;; ============================================================
 ;; Shell
 ;; ============================================================
 
@@ -39,12 +63,12 @@
 
 (define shell-tool
   (make-tool "run_shell"
-    (build-tool #:name "run_shell" #:description "Run a shell command."
-      #:parameters
-      (hasheq 'type "object" 'properties
-        (hasheq 'command (hasheq 'type "string" 'description "Shell command"))
-        'required (list "command")))
-    #:run run-shell/hash #:security security-shell))
+             (build-tool #:name "run_shell" #:description "Run a shell command."
+                         #:parameters
+                         (hasheq 'type "object" 'properties
+                                 (hasheq 'command (hasheq 'type "string" 'description "Shell command"))
+                                 'required (list "command")))
+             #:run run-shell/hash #:security security-shell))
 
 ;; ============================================================
 ;; Read
@@ -61,18 +85,20 @@
 
 (define (run-read/hash a)
   (run-read-file (hash-ref a 'filepath) (hash-ref a 'start_line #f) (hash-ref a 'end_line #f)))
-(define (security-read a) #f)
+
+(define (security-read a)
+  (check-path-escape (hash-ref a 'filepath "")))
 
 (define read-file-tool
   (make-tool "read_file"
-    (build-tool #:name "read_file" #:description "Read a file."
-      #:parameters
-      (hasheq 'type "object" 'properties
-        (hasheq 'filepath   (hasheq 'type "string"  'description "Path")
-                'start_line (hasheq 'type "integer" 'description "Start (optional)")
-                'end_line   (hasheq 'type "integer" 'description "End (optional)"))
-        'required (list "filepath")))
-    #:run run-read/hash #:security security-read))
+             (build-tool #:name "read_file" #:description "Read a file."
+                         #:parameters
+                         (hasheq 'type "object" 'properties
+                                 (hasheq 'filepath   (hasheq 'type "string"  'description "Path")
+                                         'start_line (hasheq 'type "integer" 'description "Start (optional)")
+                                         'end_line   (hasheq 'type "integer" 'description "End (optional)"))
+                                 'required (list "filepath")))
+             #:run run-read/hash #:security security-read))
 
 ;; ============================================================
 ;; Write（含安全检查：路径逃逸检测）
@@ -95,22 +121,19 @@
                   (hash-ref a 'start_line #f) (hash-ref a 'end_line #f)))
 
 (define (security-write a)
-  (define fp (hash-ref a 'filepath ""))
-  (cond [(string-contains? fp "..") (format "\u8def\u5f84\u9003\u9038: \"~a\" \u542b .." fp)]
-        [(string-contains? fp "/")  (format "\u8def\u5f84\u9003\u9038: \"~a\" \u662f\u7edd\u5bf9\u8def\u5f84" fp)]
-        [else #f]))
+  (check-path-escape (hash-ref a 'filepath "")))
 
 (define write-file-tool
   (make-tool "write_file"
-    (build-tool #:name "write_file" #:description "Write to a file."
-      #:parameters
-      (hasheq 'type "object" 'properties
-        (hasheq 'filepath   (hasheq 'type "string"  'description "Path")
-                'content    (hasheq 'type "string"  'description "Content")
-                'start_line (hasheq 'type "integer" 'description "Start (optional)")
-                'end_line   (hasheq 'type "integer" 'description "End (optional)"))
-        'required (list "filepath" "content")))
-    #:run run-write/hash #:security security-write))
+             (build-tool #:name "write_file" #:description "Write to a file."
+                         #:parameters
+                         (hasheq 'type "object" 'properties
+                                 (hasheq 'filepath   (hasheq 'type "string"  'description "Path")
+                                         'content    (hasheq 'type "string"  'description "Content")
+                                         'start_line (hasheq 'type "integer" 'description "Start (optional)")
+                                         'end_line   (hasheq 'type "integer" 'description "End (optional)"))
+                                 'required (list "filepath" "content")))
+             #:run run-write/hash #:security security-write))
 
 ;; ============================================================
 ;; 默认工具集

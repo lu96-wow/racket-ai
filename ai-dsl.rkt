@@ -342,12 +342,14 @@
   (lambda (stx)
     (syntax-case stx ()
       [(_ expr ...)
-       #'(let ([parts (list (lambda () (format "~a" expr)) ...)])
-           (define str (string-join (map (lambda (f) (f)) parts) " "))
-           (ai-tool-loop str))])))
+       #'(begin
+           (let ([parts (list (lambda () (format "~a" expr)) ...)])
+             (define str (string-join (map (lambda (f) (f)) parts) " "))
+             (ai-tool-loop str))
+           (void))])))
 
 ;; ============================================================
-;; 工具循环（完整版 - 支持动态调整轮数上限）
+;; 工具循环
 ;; ============================================================
 
 (define (ai-tool-loop prompt
@@ -369,7 +371,7 @@
     (display (format-styled 'stream-hint prompt))
     (printf "\n")
 
-    ;; === 历史树更新（只记录用户输入） ===
+    ;; 历史树更新（只记录用户输入）
     (define-values (new-root child)
       (if (h-node-user-content node)
           (h-branch-new root node prompt)
@@ -379,21 +381,18 @@
     (current-history-node child)
     (define current-child child)
 
-    ;; === 工作消息：仅用于工具循环，工具历史会丢弃 ===
-    ;; 使用 box 来支持动态修改 max-turns
+    ;; 工作消息：仅用于工具循环，工具历史会丢弃
     (define max-turns-box (box max-turns))
 
     (let loop ([work-messages (append msgs (build-messages (build-user-message #:content prompt)))]
                [turn 0])
       (if (>= turn (unbox max-turns-box))
-          ;; === 达到最大轮数：询问用户是否继续 ===
+          ;; 达到最大轮数：询问用户是否继续
           (let ([result (confirm-max-turns-dynamic (unbox max-turns-box))])
             (match result
               [(? boolean? #t)
-               ;; 继续，重置轮数
                (loop work-messages 0)]
               [(? boolean? #f)
-               ;; 终止
                (display (format-styled 'max-turns "\n  [已达到最大轮数，已终止]\n"))
                (current-messages
                 (append msgs
@@ -402,13 +401,12 @@
                          (build-assistant-message #:content "(达到最大工具调用轮数，用户终止)"))))
                (h-set-ai! root current-child "(达到最大工具调用轮数，用户终止)")]
               [(? number? new-max)
-               ;; 设置新上限并继续
                (display (format-styled 'prompt
                                        (format "  已将工具调用上限设为 ~a 轮，继续...\n" new-max)))
                (set-box! max-turns-box new-max)
                (loop work-messages 0)]))
 
-          ;; === 正常循环：继续工具调用 ===
+          ;; 正常循环
           (let* ([req (build-chat-request #:model model #:messages work-messages
                                           #:stream #t #:thinking #t
                                           #:max_tokens 8192
@@ -451,9 +449,8 @@
                                  (build-assistant-message #:content acc-cc #:reasoning_content acc-rc
                                                           #:tool_calls tool-calls))])
 
-              ;; === 判断是否为最终回复（无工具调用） ===
               (if (null? tool-calls)
-                  ;; === 最终回复：只保存净输入输出到全局历史 ===
+                  ;; 最终回复：只保存净输入输出到全局历史
                   (let ([clean-messages
                          (append msgs
                                  (build-messages
@@ -462,7 +459,7 @@
                     (current-messages clean-messages)
                     (h-set-ai! root current-child acc-cc))
 
-                  ;; === 工具调用：仅在 work-messages 中保存，循环结束后丢弃 ===
+                  ;; 工具调用：仅在 work-messages 中保存
                   (let ()
                     (set! work-messages (append work-messages (build-messages asst-msg)))
                     (display (format-styled 'tool-prefix (format " 工具 x~a " (length tool-calls))))
@@ -519,12 +516,12 @@
                              #t]))))
 
                     (printf "\n")
-                    ;; 继续循环
                     (when all-confirmed?
-                      (loop work-messages (add1 turn)))))))))))
+                      (loop work-messages (add1 turn)))))))))
+    (void)))
 
 ;; ============================================================
-;; 最大轮数确认函数（动态版）
+;; 最大轮数确认函数
 ;; ============================================================
 
 (define (confirm-max-turns-dynamic current-turns)
@@ -552,7 +549,7 @@
     [(string->number input)
      => (lambda (n)
           (if (and (integer? n) (positive? n))
-              n  ; 返回新数字
+              n
               (begin
                 (display (format-styled 'max-turns "  请输入正整数\n"))
                 (confirm-max-turns-dynamic current-turns))))]
@@ -562,14 +559,16 @@
 
 ;; ai? 宏
 (define-syntax-rule (ai? arg ...)
-  (ai-tool-loop (string-append (format "~a" (quote arg)) ...)))
+  (begin
+    (ai-tool-loop (string-append (format "~a" (quote arg)) ...))
+    (void)))
 
 ;; ============================================================
 ;; 调试：打印实际构建的消息历史
 ;; ============================================================
 
 (define (history-show-raw)
-  "显示当前消息历史的原始结构（实际发送给API的格式）"
+  "显示当前消息历史的原始结构"
   (printf "  当前消息历史 (共 ~a 条消息):\n" (length (current-messages)))
   (for ([msg (in-list (current-messages))]
         [i (in-naturals 1)])
@@ -578,7 +577,7 @@
     (printf "\n")))
 
 (define (history-show-compact)
-  "显示消息历史的紧凑格式（角色+内容摘要）"
+  "显示消息历史的紧凑格式"
   (printf "  消息序列:\n")
   (for ([msg (in-list (current-messages))]
         [i (in-naturals 1)])
@@ -586,10 +585,8 @@
     (define content (hash-ref msg 'content #f))
     (define tc (hash-ref msg 'tool_calls #f))
     (define tool-call-id (hash-ref msg 'tool_call_id #f))
-
     (printf "  [~a] " i)
     (display (format-styled 'tool-name (format "~a" role)))
-
     (cond
       [tc
        (printf " (工具调用 x~a): " (length tc))
@@ -610,26 +607,17 @@
     (printf "\n")))
 
 (define (history-show-json)
-  "以格式化的JSON显示消息历史"
+  "以JSON格式显示消息历史"
   (define msgs (current-messages))
-  ;; 先构建完整的messages数组jsexpr
-  (define messages-jsexpr
-    (hasheq 'messages msgs))
-
+  (define messages-jsexpr (hasheq 'messages msgs))
   (printf "  消息历史 (JSON格式):\n")
   (pretty-print messages-jsexpr))
-
-;; ============================================================
-;; 带请求完整信息的调试输出
-;; ============================================================
 
 (define (history-show-debug)
   "完整调试信息：消息序列 + API请求结构"
   (printf "══════════════════════════════════════════\n")
   (printf "  API 请求构建预览\n")
   (printf "══════════════════════════════════════════\n")
-
-  ;; 显示每个消息的详细结构
   (printf "\n  消息序列 (%d条):\n" (length (current-messages)))
   (printf "  ───────────────────────────────────────\n")
   (for ([msg (in-list (current-messages))]
@@ -637,8 +625,6 @@
     (printf "  [消息 %d]\n" i)
     (pretty-print msg)
     (printf "  ───────────────────────────────────────\n"))
-
-  ;; 显示完整的请求结构
   (printf "\n  完整请求体:\n")
   (printf "  ───────────────────────────────────────\n")
   (define req
@@ -662,16 +648,12 @@
   (display (format-styled 'prompt "  AI DSL 命令帮助\n"))
   (display (format-styled 'prompt "══════════════════════════════════════════\n"))
   (printf "\n")
-
-  ;; 基本命令
   (display (format-styled 'tool-name "  基本命令:\n"))
   (display (format-styled 'history-path "    :quit         退出 REPL\n"))
   (display (format-styled 'history-path "    :help         显示此帮助信息\n"))
   (display (format-styled 'history-path "    :clear        清空当前对话历史\n"))
   (display (format-styled 'history-path "    :tools        显示当前可用工具列表\n"))
   (printf "\n")
-
-  ;; 历史查看命令
   (display (format-styled 'tool-name "  历史查看:\n"))
   (display (format-styled 'history-path "    :tree         显示对话历史树\n"))
   (display (format-styled 'history-path "    :path         显示当前路径\n"))
@@ -680,8 +662,6 @@
   (display (format-styled 'history-path "    :hjson        显示消息历史（JSON格式）\n"))
   (display (format-styled 'history-path "    :hdebug        显示完整调试信息\n"))
   (printf "\n")
-
-  ;; 历史操作命令
   (display (format-styled 'tool-name "  历史操作:\n"))
   (display (format-styled 'history-path "    :jump N       跳转到第N个分支\n"))
   (display (format-styled 'history-path "    :del N        删除第N个分支\n"))
@@ -690,8 +670,6 @@
   (display (format-styled 'history-path "    :save 路径    保存历史到文件\n"))
   (display (format-styled 'history-path "    :load 路径    从文件加载历史\n"))
   (printf "\n")
-
-  ;; 工具确认命令
   (display (format-styled 'tool-name "  工具确认:\n"))
   (display (format-styled 'history-path "    :confirm-on   开启全局工具确认\n"))
   (display (format-styled 'history-path "    :confirm-off  关闭全局工具确认\n"))
@@ -699,27 +677,22 @@
   (display (format-styled 'history-path "    :allow 工具   关闭指定工具确认\n"))
   (display (format-styled 'history-path "    :confirm-clear 清除所有工具确认设置\n"))
   (printf "\n")
-
-  ;; 使用示例
   (display (format-styled 'tool-name "  使用示例:\n"))
   (display (format-styled 'history-path "    直接输入问题开始对话，如: 你好，请介绍一下自己\n"))
   (display (format-styled 'history-path "    多轮对话会自动保存历史，使用 :tree 查看分支\n"))
   (display (format-styled 'history-path "    工具调用循环中按 Enter 可中断当前请求\n"))
   (display (format-styled 'history-path "    达到最大工具调用轮数时会询问是否继续\n"))
   (printf "\n")
-
-  ;; 快捷提示
   (display (format-styled 'tool-name "  提示:\n"))
   (display (format-styled 'history-path "    • 当前分支用 * 标记\n"))
   (display (format-styled 'history-path "    • 工具调用历史不会保存到长期记忆中\n"))
   (display (format-styled 'history-path "    • 使用 :hdebug 可以查看实际发送给API的消息结构\n"))
-  (display (format-styled 'history-path"    • 使用 :save/:load 持久化对话历史\n"))
-
+  (display (format-styled 'history-path "    • 使用 :save/:load 持久化对话历史\n"))
   (display (format-styled 'prompt "══════════════════════════════════════════\n"))
   (printf "\n"))
 
 ;; ============================================================
-;; 更新命令处理函数
+;; 命令处理函数
 ;; ============================================================
 
 (define (ai-cmd line)
@@ -729,14 +702,12 @@
     [(string=? line ":quit") (quit-env) #f]
     [(or (string=? line ":help") (string=? line ":h") (string=? line ":?"))
      (show-help) #t]
-
-    ;; 历史命令
     [(string=? line ":tree") (history-tree) #t]
     [(string=? line ":path") (history-path) #t]
-    [(string=? line ":history") (history-show-raw) #t]      ; 改为原始格式
-    [(string=? line ":compact") (history-show-compact) #t]   ; 紧凑格式
-    [(string=? line ":hjson") (history-show-json) #t]        ; JSON格式
-    [(string=? line ":hdebug") (history-show-debug) #t]      ; 完整调试
+    [(string=? line ":history") (history-show-raw) #t]
+    [(string=? line ":compact") (history-show-compact) #t]
+    [(string=? line ":hjson") (history-show-json) #t]
+    [(string=? line ":hdebug") (history-show-debug) #t]
     [(string-prefix? line ":jump ")
      (define idx (string->number (substring line 6)))
      (if idx (history-jump idx) (display "  需要数字索引\n"))
@@ -751,8 +722,6 @@
      (history-save (substring line 6)) #t]
     [(string-prefix? line ":load ")
      (history-load (substring line 6)) #t]
-
-    ;; 工具确认命令
     [(string=? line ":confirm-on") (tool-confirm-on) #t]
     [(string=? line ":confirm-off") (tool-confirm-off) #t]
     [(string-prefix? line ":confirm ")
@@ -760,8 +729,6 @@
     [(string-prefix? line ":allow ")
      (tool-allow-set (substring line 7)) #t]
     [(string=? line ":confirm-clear") (tool-confirm-clear) #t]
-
-    ;; 其他命令
     [(string=? line ":tools")
      (display (format-styled 'prompt "  当前工具: "))
      (displayln (map car (tools-names (current-tools))))
@@ -770,8 +737,6 @@
      (current-messages '())
      (display (format-styled 'prompt "  历史已清空\n"))
      #t]
-
-    ;; 对话输入
     [else (ai-tool-loop line) #t]))
 
 ;; ============================================================
@@ -779,8 +744,8 @@
 ;; ============================================================
 
 (define (enter-env)
-  (display (format-styled 'prompt "\n输入 :quit 退出，直接输入问题进行对话。\n"))
-  (display (format-styled 'stream-hint "命令: :tree :jump N :del N :branch :retry :path :save :load\n"))
+  (display (format-styled 'prompt "\n输入 :quit 退出，:help 查看帮助，直接输入问题进行对话。\n"))
+  (display (format-styled 'stream-hint "命令: :help :tree :history :hdebug :clear :save :load\n"))
   (let repl-loop ()
     (display (format-styled 'prompt "\nai> "))
     (flush-output)
