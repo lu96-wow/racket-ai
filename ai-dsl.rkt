@@ -347,7 +347,7 @@
            (ai-tool-loop str))])))
 
 ;; ============================================================
-;; 工具循环
+;; 工具循环（修改后）
 ;; ============================================================
 
 (define (ai-tool-loop prompt
@@ -369,6 +369,7 @@
     (display (format-styled 'stream-hint prompt))
     (printf "\n")
 
+    ;; === 历史树更新（只记录用户输入） ===
     (define-values (new-root child)
       (if (h-node-user-content node)
           (h-branch-new root node prompt)
@@ -378,11 +379,12 @@
     (current-history-node child)
     (define current-child child)
 
-    (let loop ([messages (append msgs (build-messages (build-user-message #:content prompt)))]
+    ;; === 工作消息：仅用于工具循环，工具历史会丢弃 ===
+    (let loop ([work-messages (append msgs (build-messages (build-user-message #:content prompt)))]
                [turn 0])
       (if (>= turn max-turns)
           (display (format-styled 'max-turns "[达到最大轮数]\n"))
-          (let* ([req (build-chat-request #:model model #:messages messages
+          (let* ([req (build-chat-request #:model model #:messages work-messages
                                           #:stream #t #:thinking #t
                                           #:max_tokens 8192
                                           #:tools (tools-schemas tools))]
@@ -424,13 +426,20 @@
                                  (build-assistant-message #:content acc-cc #:reasoning_content acc-rc
                                                           #:tool_calls tool-calls))])
 
-              (h-set-ai! root current-child (if (null? tool-calls) acc-cc
-                                                (hasheq 'content acc-cc 'tool-calls tool-calls)))
-
+              ;; === 判断是否为最终回复（无工具调用） ===
               (if (null? tool-calls)
-                  (current-messages (append messages (build-messages asst-msg)))
+                  ;; === 最终回复：只保存净输入输出到全局历史 ===
+                  (let ([clean-messages
+                         (append msgs
+                                 (build-messages
+                                  (build-user-message #:content prompt)
+                                  (build-assistant-message #:content acc-cc #:reasoning_content acc-rc)))])
+                    (current-messages clean-messages)
+                    (h-set-ai! root current-child acc-cc))
+
+                  ;; === 工具调用：仅在 work-messages 中保存，循环结束后丢弃 ===
                   (let ()
-                    (set! messages (append messages (build-messages asst-msg)))
+                    (set! work-messages (append work-messages (build-messages asst-msg)))
                     (display (format-styled 'tool-prefix (format " 工具 x~a " (length tool-calls))))
                     (printf "\n")
 
@@ -457,17 +466,18 @@
                              (display (format-styled 'max-turns
                                                      (format "  ✗ 已拒绝: ~a\n"
                                                              (if (string-prefix? result "[安全拦截]") "安全拦截" "用户取消"))))
-                             (set! messages (append messages
-                                                    (build-messages (build-tool-result
-                                                                     #:tool_call_id id
-                                                                     #:content "操作已被用户拒绝，请勿重试。继续对话。"))))
+                             ;; 工具被拒绝：也在 work-messages 中记录，但继续循环
+                             (set! work-messages (append work-messages
+                                                         (build-messages (build-tool-result
+                                                                          #:tool_call_id id
+                                                                          #:content "操作已被用户拒绝，请勿重试。继续对话。"))))
                              #f]
                             [(string-prefix? result "[工具错误]")
                              (display (format-styled 'max-turns (format "  ✗ ~a\n" result)))
-                             (set! messages (append messages
-                                                    (build-messages (build-tool-result
-                                                                     #:tool_call_id id
-                                                                     #:content (format "工具执行失败: ~a，请尝试其他方法。" result)))))
+                             (set! work-messages (append work-messages
+                                                         (build-messages (build-tool-result
+                                                                          #:tool_call_id id
+                                                                          #:content (format "工具执行失败: ~a，请尝试其他方法。" result)))))
                              #f]
                             [else
                              (display (format-styled 'prompt "  ✓ 已执行\n"))
@@ -479,15 +489,16 @@
                              (when (> (string-length result) 100)
                                (display (format-styled 'tool-result "...")))
                              (printf "\n")
-                             (set! messages (append messages
-                                                    (build-messages (build-tool-result
-                                                                     #:tool_call_id id #:content result))))
+                             ;; 工具成功：在 work_messages 中添加结果
+                             (set! work-messages (append work-messages
+                                                         (build-messages (build-tool-result
+                                                                          #:tool_call_id id #:content result))))
                              #t]))))
 
                     (printf "\n")
-                    (if all-confirmed?
-                        (loop messages (add1 turn))
-                        (current-messages messages))))))))))
+                    ;; 继续循环（work-messages 会越来越大，但不会被外部看到）
+                    (when all-confirmed?
+                      (loop work-messages (add1 turn)))))))))))
 
 ;; ai? 宏
 (define-syntax-rule (ai? arg ...)
