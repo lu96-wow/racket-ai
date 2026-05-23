@@ -2,7 +2,7 @@
 ;; ============================================================
 ;; tools/deepseek-base-tool.rkt — 内置工具定义
 ;;
-;; 包含 shell / read / write 三个具体工具，
+;; 包含 shell / read / write / web_fetch 四个具体工具，
 ;; 以及由它们组成的默认工具集 default-tools。
 ;; 同时 re-export tool.rkt 的所有接口。
 ;; ============================================================
@@ -18,7 +18,7 @@
  tool-set-allow tool-set-confirm tool-clear-modes!
  merge-tool-calls
  ;; 内置工具
- shell-tool read-file-tool write-file-tool default-tools)
+ shell-tool read-file-tool write-file-tool web-fetch-tool default-tools)
 
 ;; ============================================================
 ;; 路径安全检查（通用）
@@ -136,7 +136,60 @@
              #:run run-write/hash #:security security-write))
 
 ;; ============================================================
+;; Web Fetch（基于 lynx）
+;; ============================================================
+
+(define (lynx-available?)
+  "检测 lynx 是否可用"
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (system "which lynx > /dev/null 2>&1"))
+    (not (equal? "" (string-trim (get-output-string out))))))
+
+(define (run-web-fetch url)
+  "使用 lynx 抓取网页并转为纯文本"
+  (with-handlers ([exn:fail? (lambda (e) (format "抓取失败: ~a" (exn-message e)))])
+    (define cmd
+      (format "curl -L -s --max-time 10 '~a' 2>/dev/null | lynx -dump -nolist -stdin 2>/dev/null" url))
+    (define out (open-output-string))
+    (parameterize ([current-output-port out]) (system cmd))
+    (define text (string-trim (get-output-string out)))
+    (cond
+      [(equal? text "") "抓取结果为空"]
+      [else
+       (define max-len 8000)
+       (if (> (string-length text) max-len)
+           (string-append (substring text 0 max-len)
+                          (format "\n\n... (已截断，原长度 ~a 字符)" (string-length text)))
+           text)])))
+
+(define (run-web-fetch/hash a) (run-web-fetch (hash-ref a 'url "")))
+
+(define (security-web-fetch a)
+  "安全检查 + lynx 可用性检测"
+  (define url (hash-ref a 'url ""))
+  (cond
+    [(not (lynx-available?))
+     "lynx 未安装，请运行: sudo apt install lynx -y"]
+    [(not (string? url)) "URL必须是字符串"]
+    [(equal? url "") "URL不能为空"]
+    [(not (regexp-match? #rx"^https?://" url)) "仅支持 http/https 协议"]
+    [else #f]))
+
+(define web-fetch-tool
+  (make-tool "web_fetch"
+             (build-tool
+              #:name "web_fetch"
+              #:description "从互联网抓取网页内容，返回格式化的纯文本。需要安装 lynx。"
+              #:parameters
+              (hasheq 'type "object" 'properties
+                      (hasheq 'url (hasheq 'type "string" 'description "网页URL（http/https）"))
+                      'required (list "url")))
+             #:run run-web-fetch/hash #:security security-web-fetch))
+
+;; ============================================================
 ;; 默认工具集
 ;; ============================================================
 
-(define default-tools (build-tools shell-tool read-file-tool write-file-tool))
+(define default-tools (build-tools shell-tool read-file-tool write-file-tool web-fetch-tool))
