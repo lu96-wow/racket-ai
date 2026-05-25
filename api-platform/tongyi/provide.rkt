@@ -20,6 +20,10 @@
   ;; 工具构建
   [build-tool tongyi-build-tool]
 
+  ;; 可用参数键
+  [chat-request-keys tongyi-chat-request-keys]
+  [message-keys tongyi-message-keys]
+
   ;; 请求构建
   [build-chat-request tongyi-build-chat-request]
 

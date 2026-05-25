@@ -13,7 +13,9 @@
  build-messages build-message build-user-message
  build-assistant-message build-tool-result
  build-tool
- build-chat-request json->string string->json
+ build-chat-request
+ chat-request-keys message-keys
+ json->string string->json
  response-id response-model response-usage response-first-choice
  response-content response-tool-calls
  choice-delta
@@ -27,29 +29,30 @@
 ;; Message building
 ;; ============================================================
 
-(define (build-message
-         #:role [role "user"]
-         #:content [content ""]
-         #:tool_calls [tcs #f]
-         #:tool_call_id [tcid #f]
-         #:name [name #f])
-  (let* ([h  (hasheq 'role role 'content content)]
-         [h  (if tcs  (hash-set h 'tool_calls tcs)    h)]
-         [h  (if tcid (hash-set h 'tool_call_id tcid) h)]
-         [h  (if name (hash-set h 'name name)         h)])
-    h))
+;; Available parameter keys (for build-message)
+(define message-keys
+  '(role content tool_calls tool_call_id name))
+
+(define (build-message msg)
+  (define base (hasheq 'role (hash-ref msg 'role "user")
+                        'content (hash-ref msg 'content "")))
+  (for/fold ([h base]) ([k (in-list '(tool_calls tool_call_id name))])
+    (define v (hash-ref msg k #f))
+    (if v (hash-set h k v) h)))
 
 (define (build-messages . msgs) msgs)
 
 (define (build-user-message #:content content)
-  (build-message #:role "user" #:content content))
+  (build-message (hasheq 'role "user" 'content content)))
 
 (define (build-assistant-message #:content content
                                  #:tool_calls [tcs #f])
-  (build-message #:role "assistant" #:content content #:tool_calls tcs))
+  (define h (hasheq 'role "assistant" 'content content))
+  (define h2 (if tcs (hash-set h 'tool_calls tcs) h))
+  (build-message h2))
 
 (define (build-tool-result #:tool_call_id tool_call_id #:content content)
-  (build-message #:role "tool" #:content content #:tool_call_id tool_call_id))
+  (build-message (hasheq 'role "tool" 'content content 'tool_call_id tool_call_id)))
 
 ;; ============================================================
 ;; Tool building
@@ -65,21 +68,18 @@
 ;; Request building
 ;; ============================================================
 
-(define (build-chat-request #:model model #:messages messages
-                            #:stream [stream #f]
-                            #:max_tokens [max_tokens #f]
-                            #:temperature [temp #f]
-                            #:top_p [top_p #f]
-                            #:n [n #f]
-                            #:tools [tools #f]
-                            #:stop [stop #f])
-  (define (maybe h k v) (if v (hash-set h k v) h))
-  (maybe (maybe (maybe (maybe (maybe
-                               (maybe (maybe (hasheq 'model model 'messages messages)
-                                             'stream stream) 'max_tokens max_tokens)
-                               'temperature temp) 'top_p top_p)
-                       'n n) 'tools tools)
-         'stop stop))
+;; Available parameter keys (for build-chat-request)
+(define chat-request-keys
+  '(model messages stream max_tokens temperature top_p
+    n tools stop))
+
+(define (build-chat-request params)
+  (define base (hasheq 'model (hash-ref params 'model)
+                        'messages (hash-ref params 'messages)))
+  (for/fold ([h base])
+            ([k (in-list '(stream max_tokens temperature top_p n tools stop))])
+    (define v (hash-ref params k #f))
+    (if v (hash-set h k v) h)))
 
 ;; ============================================================
 ;; Response parsing

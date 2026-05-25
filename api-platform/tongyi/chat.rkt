@@ -71,7 +71,7 @@
 ;; ============================================================
 
 (define (tongyi-chat/stream request-hash
-                            #:stop? stop?
+                            #:stop? [stop? (lambda () #f)]
                             . handlers)
   (define body-str (json->string request-hash))
   (define-values (status resp-headers body-port)

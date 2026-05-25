@@ -21,6 +21,10 @@
   [build-tool deepseek-build-tool]
   [build-thinking deepseek-build-thinking]
 
+  ;; 可用参数键
+  [chat-request-keys deepseek-chat-request-keys]
+  [message-keys deepseek-message-keys]
+
   ;; 请求构建
   [build-chat-request deepseek-build-chat-request]
 

@@ -19,7 +19,9 @@
  build-assistant-message build-tool-result
  build-tool
  build-thinking
- build-chat-request json->string string->json
+ build-chat-request
+ chat-request-keys message-keys
+ json->string string->json
  response-id response-model response-usage response-first-choice
  response-content response-tool-calls
  choice-delta
@@ -37,34 +39,33 @@
 ;; 消息构建
 ;; ============================================================
 
-(define (build-message
-         #:role [role "user"]
-         #:content [content ""]
-         #:reasoning_content [rc #f]
-         #:tool_calls [tcs #f]
-         #:tool_call_id [tcid #f]
-         #:name [name #f])
-  (let* ([h  (hasheq 'role role 'content content)]
-         [h  (if rc   (hash-set h 'reasoning_content rc)  h)]
-         [h  (if tcs  (hash-set h 'tool_calls tcs)        h)]
-         [h  (if tcid (hash-set h 'tool_call_id tcid)     h)]
-         [h  (if name (hash-set h 'name name)             h)])
-    h))
+;; 可用参数键列表 (用于 build-message)
+(define message-keys
+  '(role content reasoning_content tool_calls tool_call_id name))
+
+(define (build-message msg)
+  (define base (hasheq 'role (hash-ref msg 'role "user")
+                        'content (hash-ref msg 'content "")))
+  (for/fold ([h base]) ([k (in-list '(reasoning_content tool_calls tool_call_id name))])
+    (define v (hash-ref msg k #f))
+    (if v (hash-set h k v) h)))
 
 (define (build-messages . msgs)
   msgs)
 
 (define (build-user-message #:content content)
-  (build-message #:role "user" #:content content))
+  (build-message (hasheq 'role "user" 'content content)))
 
 (define (build-assistant-message #:content content
                                  #:reasoning_content [rc #f]
                                  #:tool_calls [tcs #f])
-  (build-message #:role "assistant" #:content content
-                 #:reasoning_content rc #:tool_calls tcs))
+  (define h (hasheq 'role "assistant" 'content content))
+  (define h2 (if rc (hash-set h 'reasoning_content rc) h))
+  (define h3 (if tcs (hash-set h2 'tool_calls tcs) h2))
+  (build-message h3))
 
 (define (build-tool-result #:tool_call_id tool_call_id #:content content)
-  (build-message #:role "tool" #:content content #:tool_call_id tool_call_id))
+  (build-message (hasheq 'role "tool" 'content content 'tool_call_id tool_call_id)))
 
 ;; ============================================================
 ;; 工具构建
@@ -83,30 +84,25 @@
 ;; 请求构建
 ;; ============================================================
 
-(define (build-chat-request #:model model #:messages messages
-                            #:stream [stream #f]
-                            #:max_tokens [max_tokens #f]
-                            #:temperature [temp #f]
-                            #:top_p [top_p #f]
-                            #:n [n #f]
-                            #:thinking [thinking #f]
-                            #:reasoning_effort [re #f]
-                            #:tools [tools #f]
-                            #:stop [stop #f])
-  (define (normalize-thinking thk)
-    (cond
-      [(eq? thk #t) (build-thinking #:enabled? #t)]
-      [(eq? thk #f) #f]
-      [else thk]))
-  (define normalized-thinking (normalize-thinking thinking))
-  (define (maybe h k v) (if v (hash-set h k v) h))
-  (maybe (maybe (maybe (maybe (maybe
-                               (maybe (maybe (maybe (maybe (hasheq 'model model 'messages messages)
-                                                           'stream stream) 'max_tokens max_tokens)
-                                             'temperature temp) 'top_p top_p)
-                               'n n) 'thinking normalized-thinking)
-                       'reasoning_effort re) 'tools tools)
-         'stop stop))
+;; 可用参数键列表 (用于 build-chat-request)
+(define chat-request-keys
+  '(model messages stream max_tokens temperature top_p
+    n thinking reasoning_effort tools stop))
+
+(define (build-chat-request params)
+  (define base (hasheq 'model (hash-ref params 'model)
+                        'messages (hash-ref params 'messages)))
+  ;; thinking: #t → auto-build, #f → omit, hash → use as-is
+  (define with-thinking
+    (match (hash-ref params 'thinking #f)
+      [#t     (hash-set base 'thinking (build-thinking #:enabled? #t))]
+      [#f     base]
+      [thk    (hash-set base 'thinking thk)]))
+  (for/fold ([h with-thinking])
+            ([k (in-list '(stream max_tokens temperature top_p n
+                          reasoning_effort tools stop))])
+    (define v (hash-ref params k #f))
+    (if v (hash-set h k v) h)))
 
 ;; ============================================================
 ;; 响应解析

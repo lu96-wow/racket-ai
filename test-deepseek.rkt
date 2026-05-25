@@ -41,8 +41,9 @@
     (build-messages (build-user-message #:content "用一句话介绍你自己。")))
 
   ;; 2. 构建请求 (非流式: 不传 #:stream)
-  (define req (build-chat-request #:model deepseek-v4-flash #:messages messages
-                                  #:max_tokens 256))
+  (define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                          'messages messages
+                                          'max_tokens 256)))
 
   ;; 3. 发送，等待完整响应
   (define resp (deepseek-chat req))
@@ -73,9 +74,10 @@
   (define messages
     (build-messages (build-user-message #:content "从1数到5，用逗号分隔。")))
 
-  (define req (build-chat-request #:model deepseek-v4-flash #:messages messages
-                                  #:stream #t
-                                  #:max_tokens 256))
+  (define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                          'messages messages
+                                          'stream #t
+                                          'max_tokens 256)))
 
   (define buf "")
   (deepseek-chat/stream req
@@ -96,11 +98,12 @@
   (define messages
     (build-messages (build-user-message #:content "9.9和9.11哪个大？一步步思考。")))
 
-  (define req (build-chat-request #:model deepseek-v4-flash #:messages messages
-                                  #:stream #t
-                                  #:max_tokens 4096
-                                  #:thinking (build-thinking #:enabled? #t)
-                                  #:reasoning_effort "high"))
+  (define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                          'messages messages
+                                          'stream #t
+                                          'max_tokens 4096
+                                          'thinking #t
+                                          'reasoning_effort "high")))
 
   (define acc-rc "")
   (define acc-cc "")
@@ -132,9 +135,10 @@
   (define messages
     (build-messages (build-user-message #:content "运行 whoami 命令。")))
 
-  (define req (build-chat-request #:model deepseek-v4-flash #:messages messages
-                                  #:max_tokens 4096
-                                  #:tools (tools-schemas default-tools)))
+  (define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                          'messages messages
+                                          'max_tokens 4096
+                                          'tools (tools-schemas default-tools))))
 
   (define resp (deepseek-chat req))
   (printf "模型: ~a\n" (response-model resp))
@@ -184,10 +188,11 @@
         (printf "\n[达到最大轮数 5，终止]\n")
         (let ()
           (printf "--- 第 ~a 轮 ---\n" (add1 turn))
-          (define req (build-chat-request #:model deepseek-v4-flash #:messages messages
-                                          #:stream #t
-                                          #:max_tokens 8192
-                                          #:tools (tools-schemas default-tools)))
+          (define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                                  'messages messages
+                                                  'stream #t
+                                                  'max_tokens 8192
+                                                  'tools (tools-schemas default-tools))))
           (define acc-cc "")
           (define acc-rc "")
           (define tc-hash (hasheq))

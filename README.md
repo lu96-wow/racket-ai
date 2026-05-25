@@ -22,10 +22,10 @@
 ;; 1. Compose: one message → one request
 (define req
   (build-chat-request
-   #:model deepseek-v4-flash
-   #:messages (build-messages
-               (build-user-message #:content "Introduce Racket in one sentence."))
-   #:max_tokens 256))
+   (hasheq 'model deepseek-v4-flash
+           'messages (build-messages
+                      (build-user-message #:content "Introduce Racket in one sentence."))
+           'max_tokens 256)))
 
 ;; 2. Send, parse, display
 (define resp (deepseek-chat req))
@@ -42,8 +42,9 @@ racket my-first-chat.rkt
 **The core advantage is already on full display:**
 - `build-user-message` → `build-chat-request` → `deepseek-chat` → `response-content` — every layer is a pure function, independently replaceable, testable, reusable
 - Want to switch platforms? Just change the `require` paths and the API key env var
-- Want streaming? Add `#:stream #t`, switch to `deepseek-chat/stream`, pass a callback
-- Want tools? Add `#:tools` + `tool-dispatch`
+- Want streaming? Add `'stream #t` to the hash table, switch to `deepseek-chat/stream`, pass a callback
+- Want tools? Add `'tools` + `tool-dispatch`
+- **Struggling to remember what parameters are available?** Call `chat-request-keys` or `message-keys` at runtime — they return the full list of valid keys.
 
 **This is what "everything is composable" means.** No magic, no implicit dependencies. Just straightforward expression composition.
 
@@ -96,10 +97,11 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 ### Streaming Chat
 
 ```racket
-(define req (build-chat-request #:model deepseek-v4-flash
-                                #:messages messages
-                                #:stream #t
-                                #:max_tokens 256))
+(define req (build-chat-request
+             (hasheq 'model deepseek-v4-flash
+                     'messages messages
+                     'stream #t
+                     'max_tokens 256)))
 
 (deepseek-chat/stream req
   (cons 'content (λ (c) (display c) (flush-output))))
@@ -112,11 +114,12 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 (require "tools/deepseek-base-tool.rkt")  ;; built-in run_shell / read_file / write_file
 
 ;; Just attach tool schemas to the request — AI decides when to call them
-(define req (build-chat-request #:model deepseek-v4-flash
-                                #:messages messages
-                                #:stream #t
-                                #:max_tokens 8192
-                                #:tools (tools-schemas default-tools)))
+(define req (build-chat-request
+             (hasheq 'model deepseek-v4-flash
+                     'messages messages
+                     'stream #t
+                     'max_tokens 8192
+                     'tools (tools-schemas default-tools))))
 ```
 
 ### Switch Platform to Tongyi (Alibaba Qwen)
@@ -130,6 +133,46 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 (tongyi-chat req)
 (tongyi-chat/stream req ...)
 ```
+
+---
+
+## Design Decisions
+
+### Hash Table Parameters (Runtime Parameter Discovery)
+
+`build-chat-request` and `build-message` accept a **single hash table** instead of keyword arguments:
+
+```racket
+(build-chat-request (hasheq 'model m 'messages msgs 'stream #t 'max_tokens 256))
+```
+
+**Why?** Keyword arguments with defaults hide what parameters are available — callers must read the source to discover them. A hash table is self-describing and introspectable:
+
+```racket
+;; Discover available parameters at the REPL:
+chat-request-keys
+;; => '(model messages stream max_tokens temperature top_p
+;;     n thinking reasoning_effort tools stop)
+
+message-keys
+;; => '(role content reasoning_content tool_calls tool_call_id name)
+```
+
+**Default value strategy:** Optional parameters default to `#f` via `hash-ref` and are omitted from the JSON request when absent, letting the API server apply its own defaults. Required parameters (`model`, `messages`) raise a clear error if missing.
+
+**Convenience wrappers** (`build-user-message`, `build-assistant-message`, `build-tool-result`) still accept keyword arguments — they build a hash table internally and delegate to `build-message`.
+
+### `#:stop?` Default in Stream Functions
+
+`deepseek-chat/stream` and `tongyi-chat/stream` accept an optional `#:stop?` predicate to signal early termination:
+
+```racket
+(deepseek-chat/stream req
+  #:stop? (λ () (some-condition))
+  (cons 'content (λ (c) (display c))))
+```
+
+The default is `(λ () #f)` — never stop. This avoids a "not a procedure" error when `#f` is passed to the underlying `in-sse` which expects a callable predicate.
 
 ---
 
