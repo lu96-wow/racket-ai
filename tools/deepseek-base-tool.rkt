@@ -63,7 +63,7 @@
 
 (define shell-tool
   (make-tool "run_shell"
-             (build-tool #:name "run_shell" #:description "Run a shell command."
+             (build-tool #:name "shell" #:description "Run a shell command."
                          #:parameters
                          (hasheq 'type "object" 'properties
                                  (hasheq 'command (hasheq 'type "string" 'description "Shell command"))

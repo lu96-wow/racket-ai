@@ -32,6 +32,10 @@
  env-print
 
  ;; xiang ying jie xi (re-export)
+ ;; xiao xi gou jian (re-export)
+ build-messages build-user-message build-assistant-message build-tool-result
+
+ ;; xiang ying jie xi (re-export)
  response-id response-model response-usage
  response-content response-tool-calls
  response-first-choice
