@@ -35,7 +35,8 @@
  response-id response-model response-usage
  response-content response-tool-calls
  response-first-choice
- tool-call-id tool-call-func-name tool-call-func-args)
+ tool-call-id tool-call-func-name tool-call-func-args
+ tool-chat-request tool-stop-chat-request)
 
 ;; ============================================================
 ;; Shao Bing Zhi
@@ -198,7 +199,8 @@
                          #:on-content [on-content (omit)]
                          #:on-tool-calls [on-tool-calls (omit)]
                          #:stop? [stop? (omit)]
-                         #:override [override #f])
+                         #:override [override #f]
+                         #:handlers [extra-handlers #f])
   (define messages (normalize-messages msg-like))
   (define req-hash (build-req-hash env messages
                                    #:stream #t
@@ -217,15 +219,78 @@
   (define default-handlers
     (for/list ([(k v) (in-hash (env-callbacks env))]
                #:unless (for/or ([h (in-list per-call-handlers)])
-                          (eq? (car h) k)))
+                          (eq? (car h) k))
+               #:unless (and extra-handlers
+                             (for/or ([h (in-list extra-handlers)])
+                               (eq? (car h) k))))
       (cons k v)))
 
-  (define all-handlers (append per-call-handlers default-handlers))
+  (define all-handlers
+    (append per-call-handlers
+            (or extra-handlers '())
+            default-handlers))
 
   (apply tongyi-chat/stream
          req
          #:stop? active-stop?
          all-handlers))
+
+
+;; ============================================================
+;; tool-chat-request : Zhi Xing Gong Ju, Fan Hui Xin Xiao Xi Lie Biao
+;;
+;; chun han shu, bu diao yong API, bu xun huan.
+;;
+;; can shu:
+;;   tools    -- gong ju ji
+;;   resp     -- env-chat fan hui de xiang ying
+;;   messages -- dang qian xiao xi lie biao
+;;
+;; fan hui: xin de xiao xi lie biao (assistant ji lu + tool jie guo)
+;;
+;; yong fa:
+;;   (define msgs2 (tool-chat-request default-tools resp msgs))
+;;   (define resp2 (env-chat env msgs2))  ;; ji xu
+;; ============================================================
+
+(define (tool-chat-request tools resp messages)
+  (define tcs (response-tool-calls resp))
+  (define content (response-content resp))
+  (if (not tcs)
+      messages
+      (for/fold ([msgs messages]) ([tc (in-list tcs)])
+        (define id (tool-call-id tc))
+        (define name (tool-call-func-name tc))
+        (define args (tool-call-func-args tc))
+        (define result (tool-dispatch tools name args))
+        (append msgs
+                (build-messages
+                 (build-assistant-message
+                  #:content content
+                  #:tool_calls (list tc)))
+                (build-messages
+                 (build-tool-result
+                  #:tool_call_id id
+                  #:content result))))))
+
+;; ============================================================
+;; tool-stop-chat-request : Zhi Xing + Ting Zhi Jian Ce
+;;
+;; tong tool-chat-request, dan duo fan hui yi ge biao zhi biao shi
+;; shi fou hai you gong ju yao diao yong.
+;;
+;; fan hui: (values you-gong-ju? xin-xiao-xi-lie-biao)
+;;
+;; yong fa:
+;;   (let-values ([(more? msgs2) (tool-stop-chat-request tools resp msgs)])
+;;     (if more? (loop msgs2) (display (response-content resp))))
+;; ============================================================
+
+(define (tool-stop-chat-request tools resp messages)
+  (define tcs (response-tool-calls resp))
+  (if (not tcs)
+      (values #f messages)
+      (values #t (tool-chat-request tools resp messages))))
 
 ;; ============================================================
 ;; env-print : Da Yin Huan Jing Xin Xi
