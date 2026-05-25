@@ -1,35 +1,40 @@
 # AI DSL — Fully Composable Building Blocks for AI Conversations
 
 > **Everything is composable from the ground up.**  
-> This is not a framework. It is a set of zero-coupling building blocks — network transport, platform adapters, tool system, conversation history, and terminal styling — each with a unified interface, ready to be composed into any form of AI interaction.  
-> `ai-dsl.rkt` is merely a **sample implementation** built on top of these blocks, never a requirement.
+> This is not a framework. It is a set of zero-coupling building blocks — network transport, platform adapters, tool system, conversation environment, and terminal styling — each with a unified interface, ready to be composed into any form of AI interaction.
 
 **License:** MIT
 
 ---
 
-## One Minute to Start: The Minimal Chat
+## One Minute to Start
 
-8 lines of code. No framework. Just function composition:
+### Raw blocks (max flexibility):
 
 ```racket
 #lang racket
-;; Pick only the blocks you need. Ignore the rest.
 (require "api-platform/deepseek/chat.rkt"
          "api-platform/deepseek/json-build-parse.rkt"
          "api-config/deepseek.rkt")
 
-;; 1. Compose: one message → one request
-(define req
-  (build-chat-request
-   (hasheq 'model deepseek-v4-flash
-           'messages (build-messages
-                      (build-user-message #:content "Introduce Racket in one sentence."))
-           'max_tokens 256)))
-
-;; 2. Send, parse, display
+(define req (build-chat-request
+             (hasheq 'model deepseek-v4-flash
+                     'messages (build-messages
+                                (build-user-message #:content "Introduce Racket."))
+                     'max_tokens 256)))
 (define resp (deepseek-chat req))
 (display (response-content resp))
+```
+
+### With env (less boilerplate):
+
+```racket
+#lang racket
+(require "env/deepseek-env.rkt"
+         "api-config/deepseek.rkt")
+
+(define my-env (make-env #:model deepseek-v4-flash #:max_tokens 256))
+(display (response-content (env-chat my-env "Introduce Racket.")))
 ```
 
 Run it:
@@ -39,56 +44,126 @@ export DEEPSEEK_API_KEY="sk-..."
 racket my-first-chat.rkt
 ```
 
-**The core advantage is already on full display:**
-- `build-user-message` → `build-chat-request` → `deepseek-chat` → `response-content` — every layer is a pure function, independently replaceable, testable, reusable
-- Want to switch platforms? Just change the `require` paths and the API key env var
-- Want streaming? Add `'stream #t` to the hash table, switch to `deepseek-chat/stream`, pass a callback
-- Want tools? Add `'tools` + `tool-dispatch`
-- **Struggling to remember what parameters are available?** Call `chat-request-keys` or `message-keys` at runtime — they return the full list of valid keys.
-
-**This is what "everything is composable" means.** No magic, no implicit dependencies. Just straightforward expression composition.
-
 ---
 
 ## Building Blocks at a Glance
 
 ```
-┌──────────────────────────────────────────────┐
-│  test.rkt  ← Best starting point, 5 demos    │
-├──────────────────────────────────────────────┤
-│  ai-dsl.rkt  ← Sample REPL (optional)        │
-├──────────────────────────────────────────────┤
-│                                              │
-│  Core Building Blocks (freely composable)     │
-│                                              │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │  Tools   │ │ History  │ │ Terminal │     │
-│  │  system  │ │ manager  │ │ styling  │     │
-│  │ tools/   │ │ history/ │ │ format-  │     │
-│  │          │ │          │ │ color/   │     │
-│  └──────────┘ └──────────┘ └──────────┘     │
-│                                              │
-│  ┌──────────────────────────────────┐        │
-│  │ Platform Adapters (pluggable)    │        │
-│  │ api-platform/deepseek/           │        │
-│  │ api-platform/tongyi/             │        │
-│  │ — same interface, interchangeable │        │
-│  └──────────────────────────────────┘        │
-│                                              │
-│  ┌──────────────────────────────────┐        │
-│  │ Network Transport net-io.rkt     │        │
-│  │ pure HTTP + SSE, no platform     │        │
-│  │ logic                            │        │
-│  └──────────────────────────────────┘        │
-│                                              │
-│  ┌──────────────────────────────────┐        │
-│  │ API Config api-config/           │        │
-│  │ URLs, model names, API keys      │        │
-│  └──────────────────────────────────┘        │
-└──────────────────────────────────────────────┘
+-──────────────────────────────────────────────
+ test-deepseek.rkt  test-tongyi.rkt
+ env/deepseek-env.rkt  env/tongyi-env.rkt  ← NEW: Environment abstraction
+-──────────────────────────────────────────────
+                                              
+  Core Building Blocks (freely composable)     
+                                              
+  ┌──────────┐ ┌──────────┐ ┌──────────┐     
+  │  Tools   │ │ History  │ │ Terminal │     
+  │  system  │ │ manager  │ │ styling  │     
+  │ tools/   │ │ history/ │ │ format-  │     
+  │          │ │          │ │ color/   │     
+  └──────────┘ └──────────┘ └──────────┘     
+                                              
+  ┌──────────────────────────────────┐        
+  │ Platform Adapters (pluggable)    │        
+  │ api-platform/deepseek/           │        
+  │ api-platform/tongyi/             │        
+  │ — same interface, interchangeable │        
+  └──────────────────────────────────┘        
+                                              
+  ┌──────────────────────────────────┐        
+  │ Network Transport net-io.rkt     │        
+  │ pure HTTP + SSE, no platform     │        
+  │ logic                            │        
+  └──────────────────────────────────┘        
+                                              
+  ┌──────────────────────────────────┐        
+  │ API Config api-config/           │        
+  │ URLs, model names, API keys      │        
+  └──────────────────────────────────┘        
+-──────────────────────────────────────────────
 ```
 
 Every layer is an independent Racket module. Zero coupling, zero implicit dependencies.
+
+---
+
+## Environment Abstraction (env/)
+
+The `env/` layer sits above the platform adapters and reduces boilerplate by bundling
+configuration (model, parameters, tools, callbacks) into a reusable **environment**.
+
+### Two files, one pattern
+
+| File | Platform | Extra options |
+|------|----------|---------------|
+| `env/deepseek-env.rkt` | DeepSeek | `thinking`, `reasoning-effort` |
+| `env/tongyi-env.rkt` | Tongyi/Qwen | — |
+
+Both export the **same interface**:
+
+| Function | Purpose |
+|----------|---------|
+| `make-env` | Create environment (all options optional) |
+| `env-set` | Create a modified copy (per-call overrides) |
+| `env-chat` | Non-streaming chat: `messages → response` |
+| `env-chat/stream` | Streaming chat with callbacks |
+| `tool-chat-request` | Execute tools from response, return new messages |
+| `tool-stop-chat-request` | Same + returns `(values has-tools? messages)` |
+| `env-print` | Display environment info |
+
+And re-exports response parsing functions:
+`response-content`, `response-model`, `response-tool-calls`, `tool-call-func-name`, etc.
+
+### Why env?
+
+**Before** (raw blocks, ~8 lines per call):
+
+```racket
+(define messages (build-messages (build-user-message #:content "Hi")))
+(define req (build-chat-request (hasheq 'model deepseek-v4-flash
+                                        'messages messages
+                                        'max_tokens 256)))
+(define resp (deepseek-chat req))
+```
+
+**After** (env, 1 line):
+
+```racket
+(define resp (env-chat my-env "Hi"))
+```
+
+### Typical usage
+
+```racket
+(require "env/deepseek-env.rkt"
+         "api-config/deepseek.rkt"
+         "tools/deepseek-base-tool.rkt")
+
+(define my-env
+  (make-env #:model deepseek-v4-flash
+            #:max_tokens 4096
+            #:tools default-tools
+            #:on-content (lambda (c) (display c) (flush-output))
+            #:on-reasoning (lambda (r) (display r))))
+
+;; Non-streaming
+(env-chat my-env "Yong yi ju hua jie shao ni zi ji.")
+
+;; Streaming (callbacks from env)
+(env-chat/stream my-env "Cong 1 shu dao 5")
+
+;; With thinking mode
+(define thinking-env
+  (env-set my-env #:thinking #t #:reasoning-effort "high"))
+(env-chat/stream thinking-env "9.9 he 9.11 na ge da?")
+
+;; Composable tool loop (no loop built-in)
+(let loop ([msgs (build-messages (build-user-message #:content "yun xing whoami"))]
+           [n 0])
+  (define resp (env-chat my-env msgs))
+  (let-values ([(more? msgs2) (tool-stop-chat-request default-tools resp msgs)])
+    (if more? (loop msgs2 (add1 n)) (display "done\n"))))
+```
 
 ---
 
@@ -97,46 +172,53 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 ### Streaming Chat
 
 ```racket
-(define req (build-chat-request
-             (hasheq 'model deepseek-v4-flash
-                     'messages messages
-                     'stream #t
-                     'max_tokens 256)))
-
-(deepseek-chat/stream req
-  (cons 'content (λ (c) (display c) (flush-output))))
+(env-chat/stream my-env "Tell me a story")
 ```
 
-### Tool Loop (AI auto-invokes Shell / file read & write)
+### With per-call overrides
 
 ```racket
-;; See test.rkt example 5: streaming + automatic tool loop
-(require "tools/deepseek-base-tool.rkt")  ;; built-in run_shell / read_file / write_file
-
-;; Just attach tool schemas to the request — AI decides when to call them
-(define req (build-chat-request
-             (hasheq 'model deepseek-v4-flash
-                     'messages messages
-                     'stream #t
-                     'max_tokens 8192
-                     'tools (tools-schemas default-tools))))
+(env-chat/stream my-env "Hello"
+  #:on-content (lambda (c) (printf ">> ~a" c))
+  #:handlers (list (cons 'reasoning (lambda (r) (void)))))
 ```
 
-### Switch Platform to Tongyi (Alibaba Qwen)
+### Tool Loop (composable, no built-in loop)
 
 ```racket
-(require "api-platform/tongyi/chat.rkt"
-         "api-platform/tongyi/json-build-parse.rkt"
-         "api-config/tongyi.rkt")
+;; tool-chat-request: pure function, one-shot
+(define msgs2 (tool-chat-request default-tools resp msgs))
 
-;; Different function names, but identical interface signatures
-(tongyi-chat req)
-(tongyi-chat/stream req ...)
+;; tool-stop-chat-request: with stop detection
+(let-values ([(more? msgs2) (tool-stop-chat-request default-tools resp msgs)])
+  (if more? (loop msgs2) (display "done\n")))
+```
+
+### Switch Platform
+
+```racket
+(require "env/tongyi-env.rkt" "api-config/tongyi.rkt")
+(define ty-env (make-env #:model tongyi-qwen-max #:max_tokens 4096))
+(env-chat ty-env "Hello")  ;; same interface
 ```
 
 ---
 
 ## Design Decisions
+
+### Environment is not a framework
+
+The `env/` layer is **optional**. You can always drop down to raw blocks
+(`deepseek-chat`, `build-chat-request`, etc.) for full control.
+The env is just a bundling convenience — it owns no state, has no hidden loops.
+
+### Composable tool primitives
+
+`tool-chat-request` and `tool-stop-chat-request` are **pure functions**:
+- They do NOT call the API
+- They do NOT loop
+- They just transform `response + messages → new-messages`
+- You compose them with standard Racket (`let loop`, `for/fold`, etc.)
 
 ### Hash Table Parameters (Runtime Parameter Discovery)
 
@@ -146,33 +228,24 @@ Every layer is an independent Racket module. Zero coupling, zero implicit depend
 (build-chat-request (hasheq 'model m 'messages msgs 'stream #t 'max_tokens 256))
 ```
 
-**Why?** Keyword arguments with defaults hide what parameters are available — callers must read the source to discover them. A hash table is self-describing and introspectable:
+**Why?** Keyword arguments with defaults hide what parameters are available.
+A hash table is self-describing and introspectable:
 
 ```racket
-;; Discover available parameters at the REPL:
-chat-request-keys
-;; => '(model messages stream max_tokens temperature top_p
-;;     n thinking reasoning_effort tools stop)
-
-message-keys
-;; => '(role content reasoning_content tool_calls tool_call_id name)
+chat-request-keys  ;; => '(model messages stream max_tokens temperature top_p ...)
+message-keys       ;; => '(role content reasoning_content tool_calls tool_call_id name)
 ```
-
-**Default value strategy:** Optional parameters default to `#f` via `hash-ref` and are omitted from the JSON request when absent, letting the API server apply its own defaults. Required parameters (`model`, `messages`) raise a clear error if missing.
-
-**Convenience wrappers** (`build-user-message`, `build-assistant-message`, `build-tool-result`) still accept keyword arguments — they build a hash table internally and delegate to `build-message`.
 
 ### `#:stop?` Default in Stream Functions
 
-`deepseek-chat/stream` and `tongyi-chat/stream` accept an optional `#:stop?` predicate to signal early termination:
+`deepseek-chat/stream` and `env-chat/stream` accept an optional `#:stop?` predicate:
 
 ```racket
-(deepseek-chat/stream req
-  #:stop? (λ () (some-condition))
-  (cons 'content (λ (c) (display c))))
+(env-chat/stream my-env "translate this"
+  #:stop? (lambda () (> (string-length buf) 1000)))
 ```
 
-The default is `(λ () #f)` — never stop. This avoids a "not a procedure" error when `#f` is passed to the underlying `in-sse` which expects a callable predicate.
+Default is `(lambda () #f)` — never stop.
 
 ---
 
@@ -180,10 +253,11 @@ The default is `(λ () #f)` — never stop. This avoids a "not a procedure" erro
 
 | Step | File | Content |
 |------|------|---------|
-| 1 | `test.rkt` examples 1–2 | Non-streaming / streaming basic chat |
-| 2 | `test.rkt` example 3 | Streaming + reasoning (thinking) mode |
-| 3 | `test.rkt` example 4 | Non-streaming + tool calls |
-| 4 | **`test.rkt` example 5** | **Streaming + automatic tool loop (core pattern)** |
+| 1 | `test-deepseek.rkt` examples 1–2 | Non-streaming / streaming with env |
+| 2 | `test-deepseek.rkt` example 3 | Streaming + thinking mode |
+| 3 | `test-deepseek.rkt` example 4 | Non-streaming + tool calls |
+| 4 | `test-deepseek.rkt` example 5 | Streaming + tool loop (composable) |
+| 5 | `test-tongyi.rkt` | Same patterns on Tongyi platform |
 
 ---
 
@@ -194,39 +268,34 @@ The default is `(λ () #f)` — never stop. This avoids a "not a procedure" erro
 
 ---
 
-## Going Further: Orchestrate Multiple AIs, Custom Workflows
-
-All the building blocks above naturally lead to a powerful possibility: **orchestrating multiple AI models — each specialized for a particular stage — into a custom AI pipeline for a specific task.** For example, use Model A for intent recognition, Model B for code generation, and Model C for review and summarization. The output of each step can be passed losslessly to the next.
-
-This platform is **always modifiable** — switch models, tweak parameters, change workflows, all within a few lines of code. No framework changes, no architecture overhauls. For different scenarios (customer service, coding assistant, writing aid, etc.), you can quickly assemble a tailored AI pipeline like building with LEGO blocks. This is not a fixed product — it is **your AI workbench, your rules.**
-(lambda to ai)
----
-
 ## Project Structure
 
 ```
 .
-├── README.md                   # This file
-├── test.rkt                    # Best starting point — 5 demo examples
-├── ai-dsl.rkt                  # Sample interactive REPL (optional)
-├── net-io.rkt                  # Pure network transport: HTTP + SSE
-├── api-config/                 # API URLs, model names, keys
-│   └── deepseek.rkt
-│   └── tongyi.rkt
-├── api-platform/               # Platform adapters (pluggable)
-│   ├── deepseek/
-│   │   ├── chat.rkt            # Chat API (sync + stream)
-│   │   ├── json-build-parse.rkt# Request/response builders & parsers
-│   │   └── ...
-│   └── tongyi/
-│       ├── chat.rkt
-│       ├── json-build-parse.rkt
-│       └── ...
-├── tools/                      # Tool system
-│   └── deepseek-base-tool.rkt  # Built-in tools: run_shell, read_file, write_file
-├── history/                    # Conversation history manager
-├── format-color/               # Terminal output styling
-└── tools/                      # Utility tools
++-- README.md
++-- test-deepseek.rkt          # DeepSeek demos (env-based)
++-- test-tongyi.rkt            # Tongyi demos (env-based)
++-- net-io.rkt                 # Pure network transport: HTTP + SSE
++-- api-config/                # API URLs, model names, keys
+|   +-- deepseek.rkt
+|   +-- tongyi.rkt
++-- api-platform/              # Platform adapters (pluggable)
+|   +-- deepseek/
+|   |   +-- chat.rkt
+|   |   +-- json-build-parse.rkt
+|   |   +-- provide.rkt
+|   +-- tongyi/
+|       +-- chat.rkt
+|       +-- json-build-parse.rkt
+|       +-- provide.rkt
++-- env/                       # Environment abstraction (NEW)
+|   +-- deepseek-env.rkt       # DeepSeek env (with thinking/reasoning)
+|   +-- tongyi-env.rkt         # Tongyi env
++-- tools/                     # Tool system
+|   +-- tool.rkt               # Tool framework
+|   +-- deepseek-base-tool.rkt # Built-in: run_shell, read_file, write_file
++-- history/                   # Conversation history manager
++-- format-color/              # Terminal output styling
 ```
 
 ---
