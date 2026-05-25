@@ -20,7 +20,9 @@
 ;;   (env-chat/stream my-env "Cong 1 shu dao 5")
 ;; ============================================================
 
-(require "../api-platform/tongyi/chat.rkt"
+(require "../format-color/core.rkt"
+         "../format-color/styles.rkt"
+         "../api-platform/tongyi/chat.rkt"
          "../api-platform/tongyi/json-build-parse.rkt"
          "../tools/tool.rkt")
 
@@ -301,18 +303,28 @@
 ;; ============================================================
 
 (define (env-print e)
-  (printf "=== Tongyi Huan Jing ===\n")
-  (printf "  Mo Xing:     ~a\n" (or (env-model e) "(not set)"))
-  (printf "  Can Shu:     ~a\n"
-          (if (zero? (hash-count (env-params e)))
-              "(none)"
-              (hash->list (env-params e))))
-  (printf "  Gong Ju:     ~a\n"
-          (if (env-tools e)
-              (string-join (tools-names (env-tools e)) ", ")
-              "(none)"))
-  (printf "  Hui Diao:    ~a\n"
-          (if (zero? (hash-count (env-callbacks e)))
-              "(none)"
-              (hash-keys (env-callbacks e))))
-  (printf "================\n"))
+  (display clr-cyan)
+  (display "=== Tongyi Huan Jing ===")
+  (display format-reset)
+  (newline)
+  (display "  Mo Xing: ")
+  (displayln (or (env-model e) "(not set)"))
+  (display "  Can Shu: ")
+  (displayln (if (zero? (hash-count (env-params e)))
+                 "(none)"
+                 (hash->list (env-params e))))
+  (display "  Gong Ju: ")
+  (display clr-green)
+  (display (if (env-tools e)
+               (string-join (tools-names (env-tools e)) ", ")
+               "(none)"))
+  (display format-reset)
+  (newline)
+  (display "  Hui Diao: ")
+  (displayln (if (zero? (hash-count (env-callbacks e)))
+                 "(none)"
+                 (hash-keys (env-callbacks e))))
+  (display clr-cyan)
+  (display "================")
+  (display format-reset)
+  (newline))
