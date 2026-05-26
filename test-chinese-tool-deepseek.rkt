@@ -21,7 +21,8 @@
 (define (main)
   (printf "\n===== 测试：中文工具调用（流式回显思考过程）=====\n\n")
 
-  (define collected-tool-calls #f)
+  ;; 累积合并流式分段送达的工具调用（按 index 合并）
+  (define tool-call-acc (hash))
 
   ;; 流式调用：实时显示思考过程 + 回复内容
   (env-chat/stream my-env
@@ -36,13 +37,21 @@
                    (display c)
                    (flush-output))
     #:on-tool-calls (lambda (tcs)
-                      (set! collected-tool-calls tcs)))
+                      ;; merge-tool-calls 来自 tools/tool.rkt，
+                      ;; 合并按 index 分片的 tool call 增量
+                      (set! tool-call-acc
+                            (merge-tool-calls tool-call-acc tcs))))
 
   (newline)
 
-  ;; 执行工具调用
-  (define tcs collected-tool-calls)
-  (when tcs
+  ;; 从累积的 hash 中提取完成（有 function.name 的）tool call
+  (define tcs
+    (for/list ([(k v) (in-hash tool-call-acc)]
+               #:when (and (hash-has-key? v 'function)
+                           (hash-has-key? (hash-ref v 'function) 'name)))
+      v))
+
+  (when (pair? tcs)
     (printf "\n工具调用:\n")
     (for ([tc (in-list tcs)])
       (printf "  ~a ~a => "
