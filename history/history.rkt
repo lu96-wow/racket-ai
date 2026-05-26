@@ -36,6 +36,18 @@
  h-branch-same           ; h-root? h-node? -> h-node?
  h-branch-new            ; h-root? h-node? string? -> (values h-root? h-node?)
 
+ ;; —— tree workflow primitives ——
+ h-continue              ; h-root? h-node? string? -> (values h-root? h-node?)
+                         ;   叶子→h-next, 有子→h-branch-new
+ h-retry-from            ; h-root? h-node? -> h-node?
+                         ;   从任意节点用相同输入创建兄弟分支
+ h-range-nodes           ; h-node? h-node? -> (listof h-node?)
+                         ;   从 start 到 end 沿路径的节点列表
+ h-squash-range          ; h-root? h-node? h-node? -> (values h-root? h-node? (listof pair?))
+                         ;   折叠 start→end 子链，返回占位节点和对话 pairs
+ h-re-root               ; h-root? h-node? -> h-root?
+                         ;   以 node 为根创建新树
+
  ;; —— query ——
  h-leaves                ; h-root? -> (listof h-node?)
  h-path                  ; h-node? -> (listof h-node?)   root→node
@@ -162,6 +174,138 @@
   (set-h-root-leaves! root leaves)
   (values root child))
 
+
+;; ============================================================
+;; Tree Workflow Primitives
+;; ============================================================
+
+;; h-continue : h-root? h-node? string? -> (values h-root? h-node?)
+;; Continue conversation from `node` with `user-content`.
+;; If `node` is a leaf (no children), behaves like h-next (linear append).
+;; If `node` already has children, auto-branches via h-branch-new.
+;; This is the "auto-branch" primitive for non-linear workflows.
+(define (h-continue root node user-content)
+  (if (null? (h-node-children node))
+      (h-next root node user-content)
+      (h-branch-new root node user-content)))
+
+;; h-retry-from : h-root? h-node? -> h-node?
+;; Create a sibling branch for `node` with the SAME user-content.
+;; This is a generalization of h-branch-same: you can retry from any
+;; node in the history, not just the current one.
+;; Returns the new sibling node (which is a leaf, ready for AI response).
+(define (h-retry-from root node)
+  (h-branch-same root node))
+
+;; h-range-nodes : h-node? h-node? -> (listof h-node?)
+;; Collect all nodes on the direct path from `start-node` to `end-node`
+;; (both inclusive).  Raises an error if end-node is not a descendant
+;; of start-node along the linear chain.
+(define (h-range-nodes start-node end-node)
+  (define end-path (h-path end-node))
+  (define start-pos
+    (let loop ([path end-path] [idx 0])
+      (cond
+        [(null? path) #f]
+        [(eq? (car path) start-node) idx]
+        [else (loop (cdr path) (add1 idx))])))
+  (unless start-pos
+    (error 'h-range-nodes
+           "end-node is not a descendant of start-node along the direct path"))
+  (list-tail end-path start-pos))
+
+;; h-squash-range : h-root? h-node? h-node? -> (values h-root? h-node? (listof pair?))
+;; Squash the conversation range from `start-node` to `end-node` (inclusive)
+;; into a single placeholder node.
+;;
+;; What happens:
+;;   1. All nodes from start-node to end-node (the range) are removed.
+;;   2. A new node (user-content = start-node's user-content) replaces
+;;      start-node in the tree.
+;;   3. end-node's children are re-parented to the new node.
+;;   4. Returns the updated root, the new placeholder node, and the
+;;      list of (user . ai) pairs for the squashed range.
+;;
+;; The caller should use h-set-ai! on the returned new-node with an
+;; AI-generated summary of the returned pairs.
+(define (h-squash-range root start-node end-node)
+  (define range-nodes (h-range-nodes start-node end-node))
+  (define parent (h-node-parent start-node))
+  (unless parent
+    (error 'h-squash-range "cannot squash from root node"))
+
+  ;; 1. Collect user/ai pairs for the range
+  (define pairs
+    (for/list ([n (in-list range-nodes)])
+      (cons (h-node-user-content n) (h-node-ai-content n))))
+
+  ;; 2. Collect all leaves in start-node's subtree (before any mutation)
+  (define old-subtree-leaves (collect-subtree-leaves start-node))
+
+  ;; 3. Collect leaves of end-node's subtree (may include end-node itself)
+  (define end-subtree-leaves
+    (if (null? (h-node-children end-node))
+        (list end-node)
+        (collect-subtree-leaves end-node)))
+
+  ;; 4. Create new replacement node at start-node's position
+  (define new-node (make-node (h-node-user-content start-node) parent))
+
+  ;; 5. Transfer end-node's children to new-node
+  (define end-children (h-node-children end-node))
+  (for ([child (in-list end-children)])
+    (set-h-node-parent! child new-node))
+  (set-h-node-children! new-node end-children)
+  (set-h-node-children! end-node '())   ;; cleanup
+
+  ;; 6. Replace start-node with new-node in parent's children list
+  (set-h-node-children! parent
+    (map (lambda (c) (if (eq? c start-node) new-node c))
+         (h-node-children parent)))
+
+  ;; 7. Update root's leaves
+  ;;    Remove all leaves from start's subtree, then add back
+  ;;    the leaves that are now under new-node.
+  (define new-leaves-for-subtree
+    (if (null? end-children)
+        (list new-node)            ;; new-node becomes the only leaf
+        end-subtree-leaves))       ;; end's children's leaves are preserved
+  (set-h-root-leaves! root
+    (append (filter (lambda (l) (not (memq l old-subtree-leaves)))
+                    (h-root-leaves root))
+            new-leaves-for-subtree))
+
+  ;; 8. Clear parent pointers for removed nodes (safety / GC)
+  (for ([n (in-list range-nodes)] #:unless (eq? n end-node))
+    (set-h-node-parent! n #f))
+
+  (values root new-node pairs))
+
+;; h-re-root : h-root? h-node? -> h-root?
+;; Re-root the conversation tree at `node`.  Creates a fresh h-root
+;; with `node` as the sole child of a new sentinel root.  All
+;; descendants of `node` are preserved; ancestors are discarded.
+;;
+;; This is useful for pruning a long history to focus on a subtree,
+;; or for making a branch the new main conversation.
+(define (h-re-root root node)
+  (define new-sentinel (h-node #f #f #f '()))
+
+  ;; Detach node from its old parent (if any)
+  (define old-parent (h-node-parent node))
+  (when old-parent
+    (set-h-node-children! old-parent
+      (remove node (h-node-children old-parent))))
+
+  ;; Attach node to new sentinel
+  (set-h-node-children! new-sentinel (list node))
+  (set-h-node-parent! node new-sentinel)
+
+  ;; Collect all leaves in node's subtree
+  (define subtree-leaves (collect-subtree-leaves node))
+
+  ;; Return new h-root
+  (h-root subtree-leaves new-sentinel))
 
 ;; ============================================================
 ;; Query
@@ -477,4 +621,130 @@
     (check-equal? (length (h-leaves d)) 1)
     (define p (h-path (car (h-leaves d))))
     (check-equal? (h-node-user-content (list-ref p (sub1 (length p)))) "a")
-    (check-equal? (h-node-ai-content (list-ref p (sub1 (length p)))) "b")))
+    (check-equal? (h-node-ai-content (list-ref p (sub1 (length p)))) "b"))
+
+  ;; --- h-continue from leaf (linear) ---
+  (test-case "h-continue from leaf behaves like h-next"
+    (define root (make-root))
+    (define-values (r1 n1) (h-continue root (h-root-node root) "q1"))
+    (h-set-ai! r1 n1 "a1")
+    (check-equal? (length (h-leaves r1)) 1)
+    (check-true (eq? (car (h-leaves r1)) n1))
+    (check-equal? (h-node-user-content n1) "q1"))
+
+  ;; --- h-continue from non-leaf (auto-branch) ---
+  (test-case "h-continue from non-leaf auto-branches"
+    (define root (make-root))
+    (define-values (r1 n1) (h-next root (h-root-node root) "q1"))
+    (h-set-ai! r1 n1 "a1")
+    (define-values (r2 n2) (h-next r1 n1 "q2"))
+    (h-set-ai! r2 n2 "a2")
+    ;; now n1 has a child; h-continue from n1 should branch
+    (define-values (r3 n3) (h-continue r2 n1 "q2-branch"))
+    (check-equal? (h-node-user-content n3) "q2-branch")
+    (check-equal? (length (h-node-children n1)) 2)
+    (check-equal? (length (h-leaves r3)) 2))
+
+  ;; --- h-retry-from ---
+  (test-case "h-retry-from creates sibling"
+    (define root (make-root))
+    (define-values (r1 n1) (h-next root (h-root-node root) "question"))
+    (h-set-ai! r1 n1 "answer 1")
+    (define n2 (h-retry-from r1 n1))
+    (check-equal? (h-node-user-content n2) "question")
+    (check-false (h-node-ai-content n2))
+    (check-equal? (length (h-leaves r1)) 2)
+    (check-true (ormap (lambda (l) (eq? l n2)) (h-leaves r1))))
+
+  ;; --- h-range-nodes ---
+  (test-case "h-range-nodes linear path"
+    (define root (make-root))
+    (define rn (h-root-node root))
+    (define-values (r1 n1) (h-next root rn "u1"))
+    (define-values (r2 n2) (h-next r1 n1 "u2"))
+    (define-values (r3 n3) (h-next r2 n2 "u3"))
+    (define range (h-range-nodes n1 n3))
+    (check-equal? (length range) 3)
+    (check-eq? (car range) n1)
+    (check-eq? (cadr range) n2)
+    (check-eq? (caddr range) n3))
+
+  (test-case "h-range-nodes error when not ancestor"
+    (define root (make-root))
+    (define rn (h-root-node root))
+    (define-values (r1 n1) (h-next root rn "u1"))
+    (define-values (r2 n2) (h-next r1 n1 "u2"))
+    (define-values (r3 n3) (h-next r2 n2 "u3"))
+    (check-exn #rx"not a descendant"
+               (lambda () (h-range-nodes n3 n1))))
+
+  ;; --- h-squash-range ---
+  (test-case "h-squash-range replaces chain with one node (end is leaf)"
+    (define root (make-root))
+    (define rn (h-root-node root))
+    (define-values (r1 n1) (h-next root rn "q1"))
+    (h-set-ai! r1 n1 "a1")
+    (define-values (r2 n2) (h-next r1 n1 "q2"))
+    (h-set-ai! r2 n2 "a2")
+    (define-values (r3 n3) (h-next r2 n2 "q3"))
+    (h-set-ai! r3 n3 "a3")
+    ;; squash n1→n3
+    (define-values (r4 new-node pairs) (h-squash-range r3 n1 n3))
+    ;; check: only 1 leaf (new-node)
+    (check-equal? (length (h-leaves r4)) 1)
+    (check-true (eq? (car (h-leaves r4)) new-node))
+    ;; check pairs
+    (check-equal? (length pairs) 3)
+    (check-equal? (car (car pairs)) "q1")
+    (check-equal? (cdr (caddr pairs)) "a3")
+    ;; check path
+    (define path (h-path new-node))
+    (check-equal? (length path) 2)  ;; sentinel + new-node
+    (check-equal? (h-node-user-content new-node) "q1")
+    ;; no ai content yet (to be filled by caller)
+    (check-false (h-node-ai-content new-node)))
+
+  (test-case "h-squash-range preserves end-node's children"
+    (define root (make-root))
+    (define rn (h-root-node root))
+    (define-values (r1 n1) (h-next root rn "q1"))
+    (h-set-ai! r1 n1 "a1")
+    (define-values (r2 n2) (h-next r1 n1 "q2"))
+    (h-set-ai! r2 n2 "a2")
+    (define-values (r3 n3) (h-next r2 n2 "q3"))
+    (h-set-ai! r3 n3 "a3")
+    (define-values (r4 n4) (h-next r3 n3 "q4"))
+    (h-set-ai! r4 n4 "a4")
+    ;; squash n1→n3 (n3 has child n4)
+    (define-values (r5 new-node pairs) (h-squash-range r4 n1 n3))
+    ;; n4 should still be the leaf
+    (check-equal? (length (h-leaves r5)) 1)
+    (check-true (eq? (car (h-leaves r5)) n4))
+    ;; new-node should have n4 as child
+    (check-equal? (length (h-node-children new-node)) 1)
+    (check-true (eq? (car (h-node-children new-node)) n4))
+    (check-true (eq? (h-node-parent n4) new-node))
+    ;; pairs should have 3 entries
+    (check-equal? (length pairs) 3))
+
+  ;; --- h-re-root ---
+  (test-case "h-re-root makes node the new root"
+    (define root (make-root))
+    (define rn (h-root-node root))
+    (define-values (r1 n1) (h-next root rn "q1"))
+    (h-set-ai! r1 n1 "a1")
+    (define-values (r2 n2) (h-next r1 n1 "q2"))
+    (h-set-ai! r2 n2 "a2")
+    (define-values (r3 n3) (h-next r2 n2 "q3"))
+    (h-set-ai! r3 n3 "a3")
+    ;; re-root at n1
+    (define new-root (h-re-root r3 n1))
+    (check-true (h-root? new-root))
+    (check-equal? (length (h-leaves new-root)) 1)
+    (check-true (eq? (car (h-leaves new-root)) n3))
+    ;; path from n3 in new root
+    (define path (h-path n3))
+    (check-equal? (length path) 4)  ;; new-sentinel, n1, n2, n3
+    (check-false (h-node-user-content (car path)))  ;; sentinel has #f content
+    (check-eq? (cadr path) n1))
+)

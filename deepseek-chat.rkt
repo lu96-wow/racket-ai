@@ -38,6 +38,16 @@
  chat-branch!           ; chat-session? string? -> string?
  chat-rewind!           ; chat-session? -> chat-session?
 
+ ;; ---- shu gong ju cao zuo (fei xian xing) ----
+ chat-continue!         ; chat-session? [h-node?] string? -> chat-session?
+                        ;   cong zhi ding jie dian ji xu (zi dong fen zhi)
+ chat-retry-node!       ; chat-session? [h-node?] -> chat-session?
+                        ;   cong zhi ding jie dian zhong pao (xiang tong shu ru)
+ chat-squash!           ; chat-session? h-node? h-node? -> chat-session?
+                        ;   AI zong jie start→end dui hua, ti huan wei yi ge jie dian
+ chat-re-root!          ; chat-session? [h-node?] -> chat-session?
+                        ;   yi jie dian wei gen zhong jian li xin shu
+
  ;; ---- cha xun ----
  chat-history           ; chat-session? -> (listof hash?)
  chat-last-response     ; chat-session? -> (or/c string? #f)
@@ -289,6 +299,139 @@
     (error 'chat-rewind! "yi jing zai gen jie dian"))
   (struct-copy chat-session session
     [current parent]))
+
+;; ============================================================
+;; chat-continue! : Cong Zhi Ding Jie Dian Ji Xu (Zi Dong Fen Zhi)
+;;
+;; cong `node` (mo ren = dang qian) ji xu dui hua.
+;; ru guo `node` yi you zi jie dian, zi dong chuang jian xin fen zhi.
+;; ============================================================
+
+(define (chat-continue! session [node (chat-session-current session)]
+                       #:msg [msg #f])
+  (unless msg
+    (error 'chat-continue! "xu yao ti gong xiao xi (msg)"))
+  (define root (chat-session-history session))
+  (define env (chat-session-env session))
+  (define tools (chat-session-tools session))
+
+  (define-values (new-root new-node)
+    (h-continue root node msg))
+
+  ;; fa song xiao xi gei AI
+  (define msgs (node->messages node))
+  (define new-msgs
+    (append msgs (build-messages (build-user-message #:content msg))))
+  (define resp (env-chat env new-msgs))
+  (define content (response-content resp))
+  (define tcs (response-tool-calls resp))
+
+  (define ai-saved
+    (if tcs
+        (hasheq 'content content 'tool_calls tcs)
+        (or content "")))
+  (h-set-ai! new-root new-node ai-saved)
+
+  (struct-copy chat-session session
+    [history new-root]
+    [current new-node]))
+
+;; ============================================================
+;; chat-retry-node! : Cong Zhi Ding Jie Dian Zhong Pao
+;;
+;; zai `node` (mo ren = dang qian) de fu jie dian xia chuang jian
+;; yi ge xin xiong di jie dian (xiang tong yong hu shu ru), ran hou
+;; chong xin fa song gei AI.
+;; ============================================================
+
+(define (chat-retry-node! session [node (chat-session-current session)])
+  (define root (chat-session-history session))
+  (define parent (h-node-parent node))
+  (unless parent
+    (error 'chat-retry-node! "gen jie dian wu fa zhong pao"))
+
+  (define user-msg (h-node-user-content node))
+  (define new-node (h-retry-from root node))
+
+  ;; fa song xiang tong yong hu shu ru gei AI
+  (define env (chat-session-env session))
+  (define msgs (node->messages parent))
+  (define new-msgs
+    (append msgs (build-messages (build-user-message #:content user-msg))))
+  (define resp (env-chat env new-msgs))
+  (define content (response-content resp))
+  (define tcs (response-tool-calls resp))
+
+  (define ai-saved
+    (if tcs
+        (hasheq 'content content 'tool_calls tcs)
+        (or content "")))
+  (h-set-ai! root new-node ai-saved)
+
+  (struct-copy chat-session session
+    [history root]
+    [current new-node]))
+
+;; ============================================================
+;; chat-squash! : AI Zong Jie Dui Hua, Ti Huan Wei Yi Ge Jie Dian
+;;
+;; xuan ding start-node he end-node, AI zong jie gai dui hua duan,
+;; ran hou yong yi ge xin jie dian qu dai zheng tiao lian.
+;; xin jie dian de zi jie dian = end-node de zi jie dian.
+;; ============================================================
+
+(define (chat-squash! session start-node end-node)
+  (define root (chat-session-history session))
+  (define env (chat-session-env session))
+
+  ;; 1. cao zuo li shi shu: shan chu fan wei, fan hui pairs
+  (define-values (new-root new-node pairs)
+    (h-squash-range root start-node end-node))
+
+  ;; 2. gou jian zong jie prompt
+  (define summary-prompt
+    (string-append
+     "以下是一段对话片段，请用简洁的语言总结这段对话的核心内容。\n\n"
+     (string-join
+      (for/list ([p (in-list pairs)])
+        (format "用户: ~a\nAI: ~a\n"
+                (or (car p) "(wu)")
+                (cond
+                  [(string? (cdr p)) (cdr p)]
+                  [(hash? (cdr p)) (hash-ref (cdr p) 'content "(gong ju diao yong)")]
+                  [else "(wu)"])))
+      "\n")
+     "\n\n请用一段话总结以上对话的核心内容和关键信息："))
+
+  ;; 3. qing qiu AI zong jie
+  (define summary-msg
+    (build-messages (build-user-message #:content summary-prompt)))
+  (define resp (env-chat env summary-msg))
+  (define summary (or (response-content resp) ""))
+
+  ;; 4. tian chong AI nei rong
+  (h-set-ai! new-root new-node summary)
+
+  (struct-copy chat-session session
+    [history new-root]
+    [current new-node]))
+
+;; ============================================================
+;; chat-re-root! : Yi Jie Dian Wei Gen Chong Jian Xin Shu
+;;
+;; xuan ding yi ge jie dian cheng wei xin de gen jie dian.
+;; suo you zi jie dian zi dong ji cheng, xian zu bei qi yong.
+;; dang qian jie dian zi dong tiao zheng wei xin shu de gen zi jie dian.
+;; ============================================================
+
+(define (chat-re-root! session [node (chat-session-current session)])
+  (define root (chat-session-history session))
+  (define new-root (h-re-root root node))
+
+  ;; dang qian jie dian: bao chi wei xin shu zhong de tong yi jie dian
+  (struct-copy chat-session session
+    [history new-root]
+    [current node]))
 
 ;; ============================================================
 ;; chat-history : Huo Qu Xiao Xi Lie Biao (gong API shi yong)
