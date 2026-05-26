@@ -16,7 +16,7 @@
 (provide
  ;; ---- 便捷调用 ----
  deepseek-chat            ; request-hash -> response-jsexpr  (非流式)
- deepseek-chat/stream     ; request-hash handler ... -> void  (流式, 回调分发)
+ deepseek-chat/stream     ; request-hash handler ... -> response-jsexpr  (流式, 回调+累积返回)
  )
 
 ;; ============================================================
@@ -81,17 +81,22 @@
   (string->json (read-response-body body-port)))
 
 ;; ============================================================
-;; deepseek-chat/stream : hasheq? (cons/c symbol? procedure?) ... -> void
+;; deepseek-chat/stream : hasheq? #:stop? (-> boolean) (cons/c symbol? procedure?) ...
+;;                       -> jsexpr?
 ;;
-;; 流式调用。接受 (cons 事件类型 回调函数) 对，按事件分发。
-;; content / reasoning / tool-calls 用回调（流中多次发生），
-;; done 是自然结束（函数返回后继续执行），error 抛异常。
+;; 流式调用 + 全局累积返回。
+;;
+;; 两种输出通道：
+;;   1. 回调 —— 实时回调 content / reasoning / tool-calls 分片
+;;   2. 返回值 —— 流结束后返回完整 response（结构与 deepseek-chat 一致）
+;;
+;; #:stop? 中断时返回截断的累积 response。
 ;;
 ;; 用法:
-;;   (define buf "")
-;;   (deepseek-chat/stream req
-;;     (cons 'content (λ (c) (set! buf (string-append buf c)) (display c))))
-;;   (printf "\n完成: ~a\n" buf)
+;;   (define resp (deepseek-chat/stream req
+;;                  (cons 'content (λ (c) (display c)))
+;;                  (cons 'reasoning (λ (r) (display r)))))
+;;   (response-content resp)  ;; 拿完整内容
 ;; ============================================================
 
 (define (deepseek-chat/stream request-hash
@@ -107,14 +112,89 @@
       (match h
         [(cons type proc) (values type proc)])))
 
+  ;; ---------- 累加器 ----------
+  (define acc-content    "")
+  (define acc-reasoning  "")
+  (define acc-tool-calls (hash))         ;; index → 合并后的 tool-call hash
+  (define last-data      #f)
+
+  ;; 工具分片合并（同 tool.rkt 的 deep-merge）
+  (define (deep-merge b o)
+    (for/fold ([m b]) ([(k v) (in-hash o)])
+      (cond
+        [(and (hash? v) (hash-has-key? m k) (hash? (hash-ref m k)))
+         (hash-set m k (deep-merge (hash-ref m k) v))]
+        [(and (string? v) (hash-has-key? m k) (string? (hash-ref m k)))
+         (hash-set m k (string-append (hash-ref m k) v))]
+        [else (hash-set m k v)])))
+
+  ;; ---------- 流式循环：回调 + 累积 ----------
   (for ([data (in-sse body-port #:stop? stop?)])
+    (set! last-data data)
     (define delta (choice-delta (response-first-choice data)))
-    (cond
-      [(delta-content delta)
-       => (λ (c) (define h (hash-ref dispatch 'content #f)) (when h (h c)))]
-      [(delta-reasoning delta)
-       => (λ (r) (define h (hash-ref dispatch 'reasoning #f)) (when h (h r)))]
-      [(delta-tool-calls delta)
-       => (λ (tcs) (define h (hash-ref dispatch 'tool-calls #f)) (when h (h tcs)))]
-      [else (void)]))
-  (void))
+
+    ;; content 分片
+    (let ([c (delta-content delta)])
+      (when c
+        (set! acc-content (string-append acc-content c))
+        (let ([h (hash-ref dispatch 'content #f)])
+          (when h (h c)))))
+
+    ;; reasoning 分片
+    (let ([r (delta-reasoning delta)])
+      (when r
+        (set! acc-reasoning (string-append acc-reasoning r))
+        (let ([h (hash-ref dispatch 'reasoning #f)])
+          (when h (h r)))))
+
+    ;; tool-calls 分片（按 index 合并）
+    (let ([tcs (delta-tool-calls delta)])
+      (when tcs
+        (for ([tc (in-list tcs)])
+          (define idx (hash-ref tc 'index 0))
+          (set! acc-tool-calls
+                (hash-set acc-tool-calls idx
+                          (deep-merge (hash-ref acc-tool-calls idx (hasheq)) tc))))
+        (let ([h (hash-ref dispatch 'tool-calls #f)])
+          (when h (h tcs))))))
+
+  ;; ---------- 构建返回 response ----------
+  ;; 从 last-data 取元信息（id / model / created / usage）
+  (define resp-id      (and last-data (hash-ref last-data 'id #f)))
+  (define resp-model   (and last-data (hash-ref last-data 'model #f)))
+  (define resp-created (and last-data (hash-ref last-data 'created #f)))
+  (define resp-usage   (and last-data (hash-ref last-data 'usage #f)))
+
+  ;; finish_reason 在 last-data 的 choice 中（非 delta）
+  (define raw-finish
+    (and last-data
+         (let ([c (response-first-choice last-data)])
+           (hash-ref c 'finish_reason #f))))
+  (define finish-reason (if (eq? raw-finish 'null) #f raw-finish))
+
+  ;; 构建 message（与深seek非流式格式一致）
+  (define msg
+    (let ([h (hasheq 'role "assistant"
+                     'content acc-content)])
+      (define h2 (if (positive? (string-length acc-reasoning))
+                     (hash-set h 'reasoning_content acc-reasoning)
+                     h))
+      (define h3
+        (let ([tcl (for/list ([(k v) (in-hash acc-tool-calls)]) v)])
+          (if (pair? tcl)
+              (hash-set h2 'tool_calls tcl)
+              h2)))
+      h3))
+
+  (define choice
+    (let ([h (hasheq 'index 0 'message msg)])
+      (if finish-reason
+          (hash-set h 'finish_reason finish-reason)
+          h)))
+
+  (hasheq 'id (or resp-id "")
+          'object "chat.completion"
+          'model (or resp-model "")
+          'created (or resp-created 0)
+          'choices (list choice)
+          'usage (or resp-usage (hasheq))))
