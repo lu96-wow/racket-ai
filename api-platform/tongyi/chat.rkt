@@ -10,8 +10,9 @@
          "../../net-io.rkt")
 
 (provide
- tongyi-chat
- tongyi-chat/stream)
+ tongyi-chat            ; request-hash -> response-jsexpr  (非流式)
+ tongyi-chat/stream     ; request-hash handler ... -> response-jsexpr  (流式, 回调+累积返回)
+ )
 
 ;; ============================================================
 ;; 内部: 构建 URL、Headers、检查 HTTP 错误
@@ -66,8 +67,16 @@
   (string->json (read-response-body body-port)))
 
 ;; ============================================================
-;; tongyi-chat/stream : hasheq? #:stop? stop? handler ... -> void
-;; 流式调用，回调分发 content / tool-calls，支持 #:stop? 中断
+;; tongyi-chat/stream : hasheq? #:stop? (-> boolean) (cons/c symbol? procedure?) ...
+;;                     -> jsexpr?
+;;
+;; 流式调用 + 全局累积返回。
+;;
+;; 两种输出通道：
+;;   1. 回调 —— 实时回调 content / tool-calls 分片
+;;   2. 返回值 —— 流结束后返回完整 response（结构与 tongyi-chat 一致）
+;;
+;; #:stop? 中断时返回截断的累积 response。
 ;; ============================================================
 
 (define (tongyi-chat/stream request-hash
@@ -83,12 +92,72 @@
       (match h
         [(cons type proc) (values type proc)])))
 
+  ;; ---------- 累加器 ----------
+  (define acc-content    "")
+  (define acc-tool-calls (hash))         ;; index → 合并后的 tool-call hash
+  (define last-data      #f)
+
+  ;; 工具分片合并（同 tool.rkt 的 deep-merge）
+  (define (deep-merge b o)
+    (for/fold ([m b]) ([(k v) (in-hash o)])
+      (cond
+        [(and (hash? v) (hash-has-key? m k) (hash? (hash-ref m k)))
+         (hash-set m k (deep-merge (hash-ref m k) v))]
+        [(and (string? v) (hash-has-key? m k) (string? (hash-ref m k)))
+         (hash-set m k (string-append (hash-ref m k) v))]
+        [else (hash-set m k v)])))
+
+  ;; ---------- 流式循环：回调 + 累积 ----------
   (for ([data (in-sse body-port #:stop? stop?)])
+    (set! last-data data)
     (define delta (choice-delta (response-first-choice data)))
-    (cond
-      [(delta-content delta)
-       => (lambda (c) (define h (hash-ref dispatch 'content #f)) (when h (h c)))]
-      [(delta-tool-calls delta)
-       => (lambda (tcs) (define h (hash-ref dispatch 'tool-calls #f)) (when h (h tcs)))]
-      [else (void)]))
-  (void))
+
+    ;; content 分片
+    (let ([c (delta-content delta)])
+      (when c
+        (set! acc-content (string-append acc-content c))
+        (let ([h (hash-ref dispatch 'content #f)])
+          (when h (h c)))))
+
+    ;; tool-calls 分片（按 index 合并）
+    (let ([tcs (delta-tool-calls delta)])
+      (when tcs
+        (for ([tc (in-list tcs)])
+          (define idx (hash-ref tc 'index 0))
+          (set! acc-tool-calls
+                (hash-set acc-tool-calls idx
+                          (deep-merge (hash-ref acc-tool-calls idx (hasheq)) tc))))
+        (let ([h (hash-ref dispatch 'tool-calls #f)])
+          (when h (h tcs))))))
+
+  ;; ---------- 构建返回 response ----------
+  (define resp-id      (and last-data (hash-ref last-data 'id #f)))
+  (define resp-model   (and last-data (hash-ref last-data 'model #f)))
+  (define resp-created (and last-data (hash-ref last-data 'created #f)))
+  (define resp-usage   (and last-data (hash-ref last-data 'usage #f)))
+
+  (define raw-finish
+    (and last-data
+         (let ([c (response-first-choice last-data)])
+           (hash-ref c 'finish_reason #f))))
+  (define finish-reason (if (eq? raw-finish 'null) #f raw-finish))
+
+  (define msg
+    (let ([h (hasheq 'role "assistant" 'content acc-content)])
+      (let ([tcl (for/list ([(k v) (in-hash acc-tool-calls)]) v)])
+        (if (pair? tcl)
+            (hash-set h 'tool_calls tcl)
+            h))))
+
+  (define choice
+    (let ([h (hasheq 'index 0 'message msg)])
+      (if finish-reason
+          (hash-set h 'finish_reason finish-reason)
+          h)))
+
+  (hasheq 'id (or resp-id "")
+          'object "chat.completion"
+          'model (or resp-model "")
+          'created (or resp-created 0)
+          'choices (list choice)
+          'usage (or resp-usage (hasheq))))
