@@ -23,7 +23,8 @@
  session-history session-current session-env session-organize-node
  session-chat session-branch session-organize session-organize?
  session-move session-path-messages
- session-print-path session-print-tree)
+ session-print-path session-print-tree
+ session-collect-nodes session-find-node)
 
 ;; ============================================================
 ;; Session 结构
@@ -93,8 +94,10 @@
                  #:on-reasoning [on-reasoning #f]
                  #:on-tool-calls [on-tool-calls #f]
                  #:stop? [stop? (make-newline-stop?)]
+                 #:max-turns [max-turns 10]
+                 #:tool-confirm [tool-confirm #f]
                  #:override [override #f])
-  (let loop ([msgs initial-msgs])
+  (let loop ([msgs initial-msgs] [turns 0])
     (define resp (env-chat/stream env msgs
                                   #:on-content on-content
                                   #:on-reasoning on-reasoning
@@ -102,13 +105,37 @@
                                   #:stop? stop?
                                   #:override override))
     (define tcs (response-tool-calls resp))
-    (if (not tcs)
-        (values resp msgs)
-        (let ([tools (env-tools env)])
-          (unless tools
-            (error 'do-chat "tool calls but no tools configured in env"))
-          (define new-msgs (tool-chat-request tools resp msgs))
-          (loop new-msgs)))))
+    (cond
+      [(not tcs)
+       ;; AI 不再调用工具，正常返回
+       (values resp msgs)]
+      [(>= turns max-turns)
+       ;; 超过最大轮数，自动取消剩余工具
+       (define tools (env-tools env))
+       (if (not tools)
+           (values resp msgs)
+           (let ([cancel-msgs (tool-cancel-chat-request tools resp msgs
+                               #:cancel-message "工具调用次数超限，自动取消")])
+             (values resp cancel-msgs)))]
+      [else
+       (define tools (env-tools env))
+       (unless tools
+         (error 'do-chat "tool calls but no tools configured in env"))
+       ;; 从完整 resp 中提取工具信息，不是从流式片段
+       (define should-execute
+         (if tool-confirm
+             (for/and ([tc (in-list tcs)])
+               (define name (tool-call-func-name tc))
+               (define args (tool-call-func-args tc))
+               (tool-confirm name args))
+             #t))
+       (if should-execute
+           ;; 用户确认，执行工具
+           (let ([new-msgs (tool-chat-request tools resp msgs)])
+             (loop new-msgs (add1 turns)))
+           ;; 用户取消，生成终止消息
+           (let ([cancel-msgs (tool-cancel-chat-request tools resp msgs)])
+             (values resp cancel-msgs)))])))
 
 ;; ============================================================
 ;; session-chat : 正常对话（流式 + 工具循环）
@@ -119,6 +146,8 @@
                       #:on-reasoning [on-reasoning #f]
                       #:on-tool-calls [on-tool-calls #f]
                       #:stop? [stop? (make-newline-stop?)]
+                      #:max-turns [max-turns 10]
+                      #:tool-confirm [tool-confirm #f]
                       #:override [override #f])
   (define env (session-env sess))
   (define input-msg
@@ -131,6 +160,8 @@
                           #:on-reasoning on-reasoning
                           #:on-tool-calls on-tool-calls
                           #:stop? stop?
+                          #:max-turns max-turns
+                          #:tool-confirm tool-confirm
                           #:override override)])
     (define new-msgs (list-tail full-msgs (length initial-msgs)))
     (let*-values ([(h new-node)
@@ -152,6 +183,8 @@
                         #:on-reasoning [on-reasoning #f]
                         #:on-tool-calls [on-tool-calls #f]
                         #:stop? [stop? (make-newline-stop?)]
+                        #:max-turns [max-turns 10]
+                        #:tool-confirm [tool-confirm #f]
                         #:override [override #f])
   (define env (session-env sess))
   (define input-msg
@@ -164,6 +197,8 @@
                           #:on-reasoning on-reasoning
                           #:on-tool-calls on-tool-calls
                           #:stop? stop?
+                          #:max-turns max-turns
+                          #:tool-confirm tool-confirm
                           #:override override)])
     (define new-msgs (list-tail full-msgs (length initial-msgs)))
     (let*-values ([(h new-node)
@@ -274,21 +309,48 @@
                 (or c "")))))
     (printf "  ~a. ~a~a\n" i prefix label)))
 
+(define (session-collect-nodes sess)
+  "返回所有非 root 节点的列表（深度优先）"
+  (define root (history-root-node (session-history sess)))
+  (define result '())
+  (define (walk n)
+    (for ([c (in-list (history-node-children n))])
+      (set! result (append result (list c)))
+      (walk c)))
+  (walk root)
+  result)
+
+(define (session-find-node sess idx)
+  "按序号（1-based）查找节点，序号来自 session-print-tree 显示的数字"
+  (define nodes (session-collect-nodes sess))
+  (and (>= idx 1) (<= idx (length nodes))
+       (list-ref nodes (sub1 idx))))
+
 (define (session-print-tree sess)
+  (define nodes (session-collect-nodes sess))
+  (define root (history-root-node (session-history sess)))
+  (define node->idx
+    (for/hash ([n (in-list nodes)] [i (in-naturals 1)])
+      (values n i)))
   (define (print-node n depth)
     (define inp (history-node-input n))
+    (define idx-str
+      (if (eq? n root)
+          ""
+          (format "[~a] " (hash-ref node->idx n ""))))
     (define label
       (cond [(eq? n (session-current sess)) " ←"]
             [(eq? n (session-organize-node sess)) " 📌"]
             [else ""]))
     (define prefix
-      (if (eq? n (history-root-node (session-history sess)))
+      (if (eq? n root)
           "root"
           (let ([c (and inp (hash-ref inp 'content ""))])
             (if (and c (> (string-length c) 30))
                 (string-append (substring c 0 30) "...")
                 (or c "")))))
-    (printf "~a~a~a\n" (make-string (* depth 2) #\space) prefix label)
+    (printf "~a~a~a~a\n" (make-string (* depth 2) #\space) idx-str prefix label)
     (for ([c (in-list (history-node-children n))])
       (print-node c (add1 depth))))
-  (print-node (history-root-node (session-history sess)) 0))
+  (printf "--- 树 (共 ~a 节点) ---\n" (add1 (length nodes)))
+  (print-node root 0))

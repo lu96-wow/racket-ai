@@ -62,7 +62,7 @@
 (define (security-shell a) #f)
 
 (define shell-tool
-  (make-tool "run_shell"
+  (make-tool "shell"
              (build-tool #:name "shell" #:description "执行一条 shell 命令。"
                          #:parameters
                          (hasheq 'type "object" 'properties
