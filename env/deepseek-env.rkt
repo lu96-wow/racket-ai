@@ -40,10 +40,10 @@
 
  ;; xiang ying jie xi (re-export)
  response-id response-model response-usage
- response-content response-tool-calls
+ response-content response-tool-calls response-reasoning
  response-first-choice
  tool-call-id tool-call-func-name tool-call-func-args
- tool-chat-request tool-stop-chat-request)
+ tool-chat-request tool-stop-chat-request tool-cancel-chat-request)
 
 ;; ============================================================
 ;; Shao Bing Zhi: qu fen "wei ti gong" he "#f shi he fa zhi"
@@ -324,6 +324,49 @@
   (if (not tcs)
       (values #f messages)
       (values #t (tool-chat-request tools resp messages))))
+
+;; ============================================================
+;; tool-cancel-chat-request : Qu Xiao Gong Ju Diao Yong
+;;
+;; tong tool-chat-request, dan bu zhi xing gong ju, er shi ti
+;; gong yi ge "yong hu zhu dong zhong zhi" xiao xi lai man zu
+;; ping tai yao qiu (tool_calls bi xu you dui ying tool result).
+;;
+;; can shu:
+;;   tools          -- gong ju ji (ke xuan, shi ji bu shi yong)
+;;   resp           -- env-chat fan hui de xiang ying
+;;   messages       -- dang qian xiao xi lie biao
+;;   #:cancel-message -- zi ding yi qu xiao xiao xi (mo ren "用户主动终止工具调用")
+;;
+;; fan hui: xin de xiao xi lie biao (assistant ji lu + tool jie guo = qu xiao xiao xi)
+;;
+;; yong fa:
+;;   (define resp (env-chat env "yun xing whoami"))
+;;   ;; yong hu jue ding qu xiao
+;;   (define msgs2 (tool-cancel-chat-request default-tools resp msgs))
+;;   (define resp2 (env-chat env msgs2))
+;; ============================================================
+
+(define (tool-cancel-chat-request tools resp messages
+                                  #:cancel-message [cancel-message "用户主动终止工具调用"])
+  (define tcs (response-tool-calls resp))
+  (define content (response-content resp))
+  ;; DeepSeek 要求: 如果响应中带 reasoning_content，回传时必须带上
+  (define reasoning (response-reasoning resp))
+  (if (not tcs)
+      messages
+      (for/fold ([msgs messages]) ([tc (in-list tcs)])
+        (define id (tool-call-id tc))
+        (append msgs
+                (build-messages
+                 (build-assistant-message
+                  #:content content
+                  #:reasoning_content reasoning
+                  #:tool_calls (list tc)))
+                (build-messages
+                 (build-tool-result
+                  #:tool_call_id id
+                  #:content cancel-message))))))
 
 ;; ============================================================
 ;; env-print : Da Yin Huan Jing Xin Xi

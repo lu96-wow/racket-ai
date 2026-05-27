@@ -42,7 +42,7 @@
  response-content response-tool-calls
  response-first-choice
  tool-call-id tool-call-func-name tool-call-func-args
- tool-chat-request tool-stop-chat-request)
+ tool-chat-request tool-stop-chat-request tool-cancel-chat-request)
 
 ;; ============================================================
 ;; Shao Bing Zhi
@@ -297,6 +297,46 @@
   (if (not tcs)
       (values #f messages)
       (values #t (tool-chat-request tools resp messages))))
+
+;; ============================================================
+;; tool-cancel-chat-request : Cancel Tool Calls
+;;
+;; Like tool-chat-request, but instead of dispatching tools,
+;; provides a "user cancelled" message to satisfy platform
+;; requirement (tool_calls must have corresponding tool results).
+;;
+;; Parameters:
+;;   tools          -- tool set (optional, not actually used)
+;;   resp           -- response from env-chat
+;;   messages       -- current message list
+;;   #:cancel-message -- custom cancel message (default "用户主动终止工具调用")
+;;
+;; Returns: new message list (assistant record + tool result = cancel message)
+;;
+;; Usage:
+;;   (define resp (env-chat env "run whoami"))
+;;   ;; user decides to cancel
+;;   (define msgs2 (tool-cancel-chat-request default-tools resp msgs))
+;;   (define resp2 (env-chat env msgs2))
+;; ============================================================
+
+(define (tool-cancel-chat-request tools resp messages
+                                  #:cancel-message [cancel-message "用户主动终止工具调用"])
+  (define tcs (response-tool-calls resp))
+  (define content (response-content resp))
+  (if (not tcs)
+      messages
+      (for/fold ([msgs messages]) ([tc (in-list tcs)])
+        (define id (tool-call-id tc))
+        (append msgs
+                (build-messages
+                 (build-assistant-message
+                  #:content content
+                  #:tool_calls (list tc)))
+                (build-messages
+                 (build-tool-result
+                  #:tool_call_id id
+                  #:content cancel-message))))))
 
 ;; ============================================================
 ;; env-print : Da Yin Huan Jing Xin Xi

@@ -23,8 +23,8 @@
  chat-request-keys message-keys
  json->string string->json
  response-id response-model response-usage response-first-choice
- response-content response-tool-calls
- choice-delta
+ response-content response-tool-calls response-reasoning
+ choice-delta choice-message
  delta-content delta-reasoning delta-tool-calls
  tool-call-id tool-call-func-name tool-call-func-args)
 
