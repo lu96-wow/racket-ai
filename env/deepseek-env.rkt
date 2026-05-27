@@ -289,6 +289,7 @@
 (define (tool-chat-request tools resp messages)
   (define tcs (response-tool-calls resp))
   (define content (response-content resp))
+  (define reasoning (response-reasoning resp))
   (if (not tcs)
       messages
       (for/fold ([msgs messages]) ([tc (in-list tcs)])
@@ -300,6 +301,7 @@
                 (build-messages
                  (build-assistant-message
                   #:content content
+                  #:reasoning_content reasoning
                   #:tool_calls (list tc)))
                 (build-messages
                  (build-tool-result
