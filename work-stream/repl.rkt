@@ -11,11 +11,13 @@
 ;;   /tree        → 打印整棵树
 ;;   /path        → 打印当前路径
 ;;   /leaves      → 列出所有叶子节点
+;;   /tool ...    → 工具权限控制（/tool help 查看详情）
 ;;   /help        → 帮助
 ;;   /quit        → 退出
 ;; ============================================================
 
 (require "session.rkt"
+         "repo.rkt"
          "../env/deepseek-env.rkt"
          "../api-config/deepseek.rkt"
          "../tools/deepseek-base-tool-chinese.rkt"
@@ -43,13 +45,6 @@
   (display c)
   (flush-output))
 
-;; on-tool-calls 回调从流式片段接收数据（碎片化的）
-;; 完整的工具调用信息从 session-chat/session-branch 返回的
-;; resp 中通过 response-tool-calls 获取。
-;; REPL 层直接用 tool-confirm 来显示和确认工具调用。
-(define (on-tool-calls tcs)
-  (void))  ;; 不处理流式片段，等完整响应再处理
-
 ;; ============================================================
 ;; tool-confirm : 用户确认工具调用
 ;; 返回 #t 执行，#f 取消
@@ -64,9 +59,6 @@
   (flush-output)
   (define line (read-line))
   (not (string-prefix? (string-trim line) "n")))
-
-
-
 
 ;; ============================================================
 ;; 显示帮助
@@ -87,6 +79,7 @@
   (display "  /leaves       列出叶子\n")
   (display "  /help         显示帮助\n")
   (display "  /quit         退出\n")
+  (display "  /tool help     工具权限控制（/tool help 查看详情）\n")
   (display format-reset))
 
 ;; ============================================================
@@ -203,7 +196,6 @@
            (let*-values ([(s2 r) (session-branch sess input
                                                   #:on-reasoning on-reasoning
                                                   #:on-content on-content
-                                                  #:on-tool-calls on-tool-calls
                                                   #:tool-confirm tool-confirm
                                                   #:max-turns 10)])
              (printf "\n")
@@ -219,11 +211,14 @@
      (let*-values ([(s2 r) (session-branch sess input
                                             #:on-reasoning on-reasoning
                                             #:on-content on-content
-                                            #:on-tool-calls on-tool-calls
                                             #:tool-confirm tool-confirm
                                             #:max-turns 10)])
        (printf "\n")
        s2)]
+    ;; /tool 命令: 工具权限控制
+    [(and (string-prefix? line "/tool ")
+          (repo-tool-dispatch-repl parts #:tools (env-tools env)))
+     sess]
     [(string-prefix? line "/")
      (display clr-red)
      (printf "未知命令: ~a\n" (car parts))
@@ -236,7 +231,6 @@
      (let*-values ([(s2 r) (session-chat sess line
                                           #:on-reasoning on-reasoning
                                           #:on-content on-content
-                                          #:on-tool-calls on-tool-calls
                                           #:tool-confirm tool-confirm
                                           #:max-turns 10)])
        (printf "\n")

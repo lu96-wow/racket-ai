@@ -13,6 +13,7 @@
  tool-dispatch
  tool-set-global-allow tool-set-global-confirm tool-global-mode
  tool-set-allow tool-set-confirm tool-clear-modes!
+ tool-per-modes
  merge-tool-calls)
 
 (struct tool (name schema run security) #:prefab)
